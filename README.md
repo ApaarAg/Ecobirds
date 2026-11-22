@@ -1,11 +1,39 @@
-<div align="center">
+# EcoSonic 3.0 — Frontend Architecture & Handoff Guide
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+EcoSonic 3.0 is a nature-inspired environmental sound intelligence web application combining an editorial public website (`/`) with a scientific acoustic monitoring workspace (`/app/*`).
 
-  <h1>Built with AI Studio</h2>
+## Stage 1 Scope (Current Frontend Build)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+This repository implements **Stage 1 (Frontend Construction)**:
+- Complete responsive public landing page (`/`) with nature photography, editorial typography, methodology, capabilities, and explicitly labeled demonstration observatory preview.
+- Full scientific monitoring workspace under `/app`:
+  - `/app/observatory` — Live Observatory (layered spectrogram/waveform Canvas visualizer, stream controls, station fixture selector, metrics)
+  - `/app/detections` — Species Intelligence (filtering, sorting, raw model score caveats)
+  - `/app/soundscape` — Soundscape Intelligence (Apache ECharts visualizations for ACI, ADI, AEI, NDSI, Shannon entropy, temporal activity, frequency bands)
+  - `/app/disturbances` — Disturbance Radar (transportation, environmental hazard, mechanical activity, cultural sound timeline)
+  - `/app/sessions` — Session History (session archives and detail inspector)
+  - `/app/settings` — Appearance, audio input preferences, validated backend endpoint configuration, and runtime diagnostics
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Demonstration Mode & Scientific Integrity
 
-</div>
+- All data displayed in Stage 1 originates from isolated local fixtures in `src/data/demoFixtures.ts` and is marked with explicit `DEMO MODE` indicators.
+- Confidence scores are documented as raw acoustic model scores rather than calibrated probabilities.
+- Soundscape metrics (ACI, ADI, AEI, NDSI, Spectral Shannon Entropy) are reported individually without fabricated composite ecosystem health scores.
+
+## Stage 2 Integration Contract (Antigravity Handoff)
+
+Presentation components do not import fixtures directly; they read from `EcoSonicContext`, which consumes an `EcoSonicDataAdapter` (`src/adapters/ecosonicAdapter.ts`).
+
+To connect the frozen backend protocol in Stage 2:
+1. Implement `EcoSonicDataAdapter` against the backend REST endpoints and WebSocket framing.
+2. Pass the live adapter into `<EcoSonicProvider adapter={liveAdapter}>` in `src/App.tsx`.
+3. Pass a live Web Audio `AnalyserNode` into `AcousticVisualizer` (`src/components/observatory/AcousticVisualizer.tsx`) to render live microphone buffers instead of demo synthesis.
+
+## Development & Verification
+
+```bash
+npm run dev     # Start Vite dev server on port 3000
+npm run lint    # TypeScript typecheck
+npm run build   # Production bundle
+npx --yes tsx --test src/lib/acoustics.test.ts  # Unit tests
+```
