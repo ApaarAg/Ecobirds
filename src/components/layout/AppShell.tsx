@@ -15,6 +15,7 @@ import {
 import { useEcoSonic } from '../../context/EcoSonicContext';
 import { DEMO_HABITAT_PRESETS } from '../../data/demoFixtures';
 import { formatDurationSeconds } from '../../lib/acoustics';
+import { ErrorBanner } from '../ui/ErrorBanner';
 
 interface NavItem {
   to: string;
@@ -41,7 +42,8 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { isDemoMode, monitoringStatus, activePreset, elapsedSec } = useEcoSonic();
+  const { isDemoMode, monitoringStatus, activePreset, elapsedSec, error, isLoading, retryLoad } =
+    useEcoSonic();
   const location = useLocation();
 
   const activeHabitat =
@@ -181,8 +183,15 @@ export function AppShell({
 
         <main
           key={location.pathname}
-          className="flex-1 px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-[1360px] w-full mx-auto"
+          className="flex-1 px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-[1360px] w-full mx-auto space-y-6"
         >
+          {error && (
+            <ErrorBanner
+              message={error}
+              onRetry={retryLoad}
+              isRetrying={isLoading}
+            />
+          )}
           {children}
         </main>
       </div>

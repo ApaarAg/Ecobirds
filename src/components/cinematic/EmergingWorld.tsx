@@ -1,4 +1,4 @@
-const HERO_FOREST_IMG = '/src/assets/images/coastal_waterside_forest_web.jpg';
+const HERO_FOREST_IMG = '/assets/aistudio/donnie-rosie-5z1FylG3Qf0-unsplash_334b210d.jpg';
 
 export interface FallbackWorldState {
   visibility: number;
@@ -19,7 +19,7 @@ interface EmergingWorldProps {
 }
 
 /**
- * Multi-layered documentary wet forest waterside environment revealed after ripple reflection emergence.
+ * Autumn oak leaf resting on reflective woodland stream water over submerged pebbles (WebGL fallback layer).
  */
 export function EmergingWorld({
   world,
@@ -61,10 +61,10 @@ export function EmergingWorld({
       >
         <img
           src={HERO_FOREST_IMG}
-          alt="Temperate wet old-growth rainforest stream with mossy boulders, nurse log, sword ferns, and misty conifers"
+          alt="Close-up low-angle woodland stream with a floating autumn oak leaf, reflective water ripples, and wet stones"
           loading="eager"
           decoding="async"
-          className="w-full h-full object-cover object-[39%_center] md:object-center brightness-[0.88] contrast-[1.03] saturate-[0.94]"
+          className="w-full h-full object-cover object-[51%_52%] md:object-[50%_52%]"
         />
       </div>
     </div>

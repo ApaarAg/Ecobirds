@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { formatVisualizerCaption } from '../../lib/observatory';
 import type { HabitatPresetId, MonitoringStatus } from '../../types/ecosonic';
 
 interface AcousticVisualizerProps {
@@ -6,34 +7,65 @@ interface AcousticVisualizerProps {
   presetId: HabitatPresetId;
   peakFrequencyHz: number;
   rmsLevelDbfs: number;
+  sampleRateHz?: number;
+  fftSize?: number;
+  analyserNode?: AnalyserNode | null;
+  isMicrophoneActive?: boolean;
   reducedMotion?: boolean;
   height?: number;
 }
 
 /**
  * AcousticVisualizer renders a dual-layer scientific acoustic field view:
- * 1) Scrolling spectrogram-inspired frequency band energy columns (top 55%)
- * 2) Multi-harmonic acoustic waveform envelope with calibrated gridlines (bottom 45%)
+ * 1) Scrolling spectrogram-inspired frequency band energy columns (top 56%)
+ * 2) Multi-harmonic acoustic waveform envelope with calibrated gridlines (bottom 44%)
  *
- * Future Antigravity Web Audio Integration:
- * Accept an optional `AnalyserNode` prop to replace deterministic demo harmonic synthesis
- * with live `getByteFrequencyData` / `getFloatTimeDomainData` buffers.
+ * Uses local AnalyserNode buffers when browser microphone preview is active,
+ * or deterministic habitat fixture envelopes during demo mode.
  */
 export function AcousticVisualizer({
   status,
   presetId,
   peakFrequencyHz,
   rmsLevelDbfs,
+  sampleRateHz = 48000,
+  fftSize = 2048,
+  analyserNode = null,
+  isMicrophoneActive = false,
   reducedMotion = false,
   height = 280,
 }: AcousticVisualizerProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const stateRef = useRef({ status, presetId, peakFrequencyHz, rmsLevelDbfs, reducedMotion });
-  stateRef.current = { status, presetId, peakFrequencyHz, rmsLevelDbfs, reducedMotion };
+  const redrawRef = useRef<((advance: boolean) => void) | null>(null);
+
+  const stateRef = useRef({
+    status,
+    presetId,
+    peakFrequencyHz,
+    rmsLevelDbfs,
+    sampleRateHz,
+    fftSize,
+    analyserNode,
+    isMicrophoneActive,
+    reducedMotion,
+  });
+  stateRef.current = {
+    status,
+    presetId,
+    peakFrequencyHz,
+    rmsLevelDbfs,
+    sampleRateHz,
+    fftSize,
+    analyserNode,
+    isMicrophoneActive,
+    reducedMotion,
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -42,10 +74,20 @@ export function AcousticVisualizer({
     const historyCols = 110;
     const freqBins = 44;
 
-    // Pre-seed deterministic spectrogram waterfall history so first paint looks populated
     const waterfall: number[][] = Array.from({ length: historyCols }, (_, colIdx) =>
       computeColumnBins(colIdx * 0.14, freqBins, stateRef.current.presetId)
     );
+
+    let liveFreqBuffer: Uint8Array<ArrayBuffer> | null = null;
+    let liveTimeBuffer: Float32Array<ArrayBuffer> | null = null;
+
+    const getPrefersReduced = () => {
+      const mql =
+        typeof window.matchMedia === 'function'
+          ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+          : false;
+      return stateRef.current.reducedMotion || mql;
+    };
 
     const drawFrame = (advance: boolean) => {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -68,9 +110,32 @@ export function AcousticVisualizer({
       ctx.fillStyle = '#0C1511';
       ctx.fillRect(0, 0, width, h);
 
-      const { status: curStatus, presetId: curPreset, peakFrequencyHz: curPeak } = stateRef.current;
+      const {
+        status: curStatus,
+        presetId: curPreset,
+        peakFrequencyHz: curPeak,
+        sampleRateHz: curSampleRate,
+        fftSize: curFftSize,
+        analyserNode: curAnalyser,
+        isMicrophoneActive: curMicActive,
+      } = stateRef.current;
 
-      if (advance && curStatus === 'streaming') {
+      const usingLiveMic = Boolean(curMicActive && curAnalyser);
+
+      if (usingLiveMic && curAnalyser) {
+        if (!liveFreqBuffer || liveFreqBuffer.length !== curAnalyser.frequencyBinCount) {
+          liveFreqBuffer = new Uint8Array(curAnalyser.frequencyBinCount);
+        }
+        if (!liveTimeBuffer || liveTimeBuffer.length !== curAnalyser.fftSize) {
+          liveTimeBuffer = new Float32Array(curAnalyser.fftSize);
+        }
+        if (advance && curStatus === 'streaming') {
+          curAnalyser.getByteFrequencyData(liveFreqBuffer);
+          curAnalyser.getFloatTimeDomainData(liveTimeBuffer);
+          waterfall.shift();
+          waterfall.push(sampleAnalyserColumn(liveFreqBuffer, freqBins, curSampleRate));
+        }
+      } else if (advance && curStatus === 'streaming') {
         phase += 0.085;
         waterfall.shift();
         waterfall.push(computeColumnBins(phase, freqBins, curPreset));
@@ -145,20 +210,28 @@ export function AcousticVisualizer({
 
       const ampScale = waveHeight * 0.42;
 
+      const sampleWaveformAt = (nx: number): number => {
+        if (usingLiveMic && liveTimeBuffer && liveTimeBuffer.length > 0) {
+          const idx = Math.min(
+            liveTimeBuffer.length - 1,
+            Math.max(0, Math.floor(nx * (liveTimeBuffer.length - 1)))
+          );
+          return Math.max(-1, Math.min(1, liveTimeBuffer[idx] * 1.8)) * ampScale;
+        }
+        const env = Math.sin(nx * Math.PI);
+        return synthesizeWave(nx, phase, curPreset) * ampScale * env;
+      };
+
       // Soft moss area fill
       ctx.beginPath();
       ctx.moveTo(0, waveCenterY);
       const step = 3;
       for (let x = 0; x <= width; x += step) {
-        const nx = x / width;
-        const env = Math.sin(nx * Math.PI);
-        const yOffset = synthesizeWave(nx, phase, curPreset) * ampScale * env;
+        const yOffset = sampleWaveformAt(x / width);
         ctx.lineTo(x, waveCenterY - Math.abs(yOffset));
       }
       for (let x = width; x >= 0; x -= step) {
-        const nx = x / width;
-        const env = Math.sin(nx * Math.PI);
-        const yOffset = synthesizeWave(nx, phase, curPreset) * ampScale * env;
+        const yOffset = sampleWaveformAt(x / width);
         ctx.lineTo(x, waveCenterY + Math.abs(yOffset) * 0.85);
       }
       ctx.closePath();
@@ -168,9 +241,7 @@ export function AcousticVisualizer({
       // Primary crisp waveform trace
       ctx.beginPath();
       for (let x = 0; x <= width; x += 2) {
-        const nx = x / width;
-        const env = Math.sin(nx * Math.PI);
-        const yOffset = synthesizeWave(nx, phase, curPreset) * ampScale * env;
+        const yOffset = sampleWaveformAt(x / width);
         if (x === 0) ctx.moveTo(x, waveCenterY + yOffset);
         else ctx.lineTo(x, waveCenterY + yOffset);
       }
@@ -178,53 +249,137 @@ export function AcousticVisualizer({
       ctx.lineWidth = 1.4;
       ctx.stroke();
 
-      // Bottom time axis caption inside canvas
-      ctx.fillStyle = 'rgba(165, 172, 156, 0.72)';
+      // Bottom axis caption reflecting persisted sampleRateHz, fftSize, and source mode
+      ctx.fillStyle = 'rgba(165, 172, 156, 0.78)';
       ctx.font = '10px "IBM Plex Mono", monospace';
-      const caption =
-        width < 460
-          ? 'TIME ENVELOPE · 48 kHz FFT (DEMO)'
-          : 'TIME-DOMAIN ENVELOPE · 48.0 kHz / 2048-PT FFT (DEMO FIXTURE)';
+      const caption = formatVisualizerCaption({
+        sampleRateHz: curSampleRate,
+        fftSize: curFftSize,
+        isMicrophoneActive: Boolean(curMicActive),
+        compact: width < 480,
+      });
       ctx.fillText(caption, 10, h - 8);
 
       ctx.restore();
     };
 
-    const prefersReduced =
-      stateRef.current.reducedMotion ||
-      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
+    redrawRef.current = drawFrame;
     drawFrame(false);
 
-    if (prefersReduced) {
-      return;
+    // ResizeObserver ensures crisp DPR & dimensions even when paused or reduced motion
+    let resizeObserver: ResizeObserver | null = null;
+    const handleResize = () => {
+      drawFrame(false);
+    };
+
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(handleResize);
+      resizeObserver.observe(container);
+    } else {
+      window.addEventListener('resize', handleResize);
     }
 
-    let lastTime = 0;
-    const loop = (ts: number) => {
-      if (ts - lastTime >= 45) {
-        lastTime = ts;
-        drawFrame(true);
+    const startOrStopLoop = () => {
+      if (animId) {
+        window.cancelAnimationFrame(animId);
+        animId = 0;
       }
+      if (getPrefersReduced()) {
+        drawFrame(false);
+        return;
+      }
+
+      let lastTime = 0;
+      const loop = (ts: number) => {
+        if (getPrefersReduced()) {
+          animId = 0;
+          drawFrame(false);
+          return;
+        }
+        if (ts - lastTime >= 45) {
+          lastTime = ts;
+          drawFrame(stateRef.current.status === 'streaming');
+        }
+        animId = window.requestAnimationFrame(loop);
+      };
       animId = window.requestAnimationFrame(loop);
     };
-    animId = window.requestAnimationFrame(loop);
+
+    startOrStopLoop();
+
+    const mql =
+      typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null;
+    const handleMotionChange = () => {
+      startOrStopLoop();
+    };
+    mql?.addEventListener?.('change', handleMotionChange);
 
     return () => {
-      window.cancelAnimationFrame(animId);
+      redrawRef.current = null;
+      if (animId) {
+        window.cancelAnimationFrame(animId);
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      } else {
+        window.removeEventListener('resize', handleResize);
+      }
+      mql?.removeEventListener?.('change', handleMotionChange);
     };
   }, []);
 
+  // Re-evaluate loop and redraw immediately when reducedMotion or audio/stream settings change
+  useEffect(() => {
+    redrawRef.current?.(false);
+  }, [status, presetId, sampleRateHz, fftSize, isMicrophoneActive, analyserNode, reducedMotion]);
+
   return (
-    <div className="relative w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[#0C1511]">
+    <div
+      ref={containerRef}
+      className="relative w-full overflow-hidden rounded-lg border border-[var(--app-border)] bg-[#0C1511]"
+    >
       <canvas
         ref={canvasRef}
         data-testid="acoustic-visualizer"
+        data-sample-rate={sampleRateHz}
+        data-fft-size={fftSize}
+        data-reduced-motion={reducedMotion ? 'true' : 'false'}
+        data-input-mode={isMicrophoneActive ? 'local-microphone' : 'demo-fixture'}
         aria-label="Layered environmental acoustic spectrogram and time-domain waveform visualizer"
         style={{ height: `${height}px`, width: '100%', display: 'block' }}
       />
     </div>
   );
+}
+
+function sampleAnalyserColumn(
+  freqData: Uint8Array,
+  bins: number,
+  sampleRateHz: number
+): number[] {
+  const result = new Array<number>(bins).fill(0);
+  if (freqData.length === 0) return result;
+
+  const nyquist = Math.max(1, sampleRateHz) / 2;
+  const maxDisplayHz = Math.min(nyquist, 11000);
+  const usableBins = Math.max(
+    1,
+    Math.min(freqData.length, Math.round((maxDisplayHz / nyquist) * freqData.length))
+  );
+
+  for (let b = 0; b < bins; b += 1) {
+    const startIdx = Math.floor((b / bins) * usableBins);
+    const endIdx = Math.max(startIdx + 1, Math.floor(((b + 1) / bins) * usableBins));
+    let sum = 0;
+    for (let i = startIdx; i < endIdx && i < freqData.length; i += 1) {
+      sum += freqData[i];
+    }
+    const avg = sum / Math.max(1, endIdx - startIdx);
+    result[b] = Math.min(1, Math.max(0, avg / 255));
+  }
+  return result;
 }
 
 function computeColumnBins(t: number, bins: number, preset: HabitatPresetId): number[] {

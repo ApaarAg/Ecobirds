@@ -8,17 +8,38 @@ export const LEAF_BLADE_LENGTH = 1.0;
 export const LEAF_BLADE_CENTER_OFFSET_X = 0.44;
 
 /**
- * Local model-space coordinates of the petiole abscission tip where the 3D leaf
- * physically joins the overhanging tree twig node (relative to blade center of mass).
+ * Local model-space coordinates of the petiole abscission tip where the 3D oak leaf
+ * physically joins the overhanging twig node (relative to blade center of mass).
  */
 export const LEAF_STEM_TIP_LOCAL: Readonly<Vec3Tuple> = {
   x: -0.34 - LEAF_BLADE_CENTER_OFFSET_X,
-  y: 0.036,
+  y: 0.032,
   z: 0.008,
 };
 
-/** Normalized longitudinal positions & sweep of the 8 major lateral vein pairs */
-export const LEAF_VEIN_BASES = [0.11, 0.21, 0.32, 0.43, 0.54, 0.65, 0.76, 0.86] as const;
+/** Longitudinal anchors of the primary lateral veins feeding each oak lobe */
+export const LEAF_VEIN_BASES = [0.18, 0.36, 0.55, 0.74, 0.87] as const;
+
+interface OakLobeSpec {
+  center: number;
+  width: number;
+  amp: number;
+  skew: number;
+}
+
+const OAK_LOBES_TOP: readonly OakLobeSpec[] = [
+  { center: 0.21, width: 0.068, amp: 0.145, skew: 0.22 },
+  { center: 0.42, width: 0.076, amp: 0.215, skew: 0.28 },
+  { center: 0.62, width: 0.072, amp: 0.195, skew: 0.3 },
+  { center: 0.80, width: 0.064, amp: 0.125, skew: 0.32 },
+];
+
+const OAK_LOBES_BOTTOM: readonly OakLobeSpec[] = [
+  { center: 0.19, width: 0.065, amp: 0.132, skew: 0.2 },
+  { center: 0.40, width: 0.074, amp: 0.198, skew: 0.26 },
+  { center: 0.60, width: 0.07, amp: 0.182, skew: 0.28 },
+  { center: 0.78, width: 0.062, amp: 0.118, skew: 0.3 },
+];
 
 export interface LeafOutlineSample {
   x: number;
@@ -51,62 +72,63 @@ function smoothstep(e0: number, e1: number, x: number): number {
 }
 
 /**
- * Asymmetric forward-tilted botanical serration wave along the leaf margin.
+ * Evaluates a single forward-tilted oak lobe with subtle secondary shoulder contour.
  */
-function evalSerration(s: number, phaseShift: number): number {
-  const envelope = smoothstep(0.07, 0.22, s) * (1 - smoothstep(0.90, 0.99, s));
-  if (envelope <= 0.0001) return 0;
-
-  // 13 primary teeth + subtle secondary double-serration toothlet
-  const cycles = s * 13.0 + phaseShift;
-  const frac = cycles - Math.floor(cycles);
-  // Sawtooth skewed toward apex: gradual outward ramp (0..0.72), crisp notch drop (0.72..1.0)
-  const primaryTooth = frac < 0.72 ? frac / 0.72 : (1.0 - frac) / 0.28;
-  const secondaryCycles = s * 26.0 + phaseShift * 2.0 + 0.35;
-  const secFrac = secondaryCycles - Math.floor(secondaryCycles);
-  const secondaryTooth = secFrac < 0.68 ? secFrac / 0.68 : (1.0 - secFrac) / 0.32;
-
-  return (primaryTooth * 0.78 + secondaryTooth * 0.22 - 0.35) * 0.032 * envelope;
+function evalOakLobes(s: number, lobes: readonly OakLobeSpec[]): number {
+  let sum = 0;
+  for (let i = 0; i < lobes.length; i++) {
+    const lobe = lobes[i];
+    const d = (s - lobe.center) / lobe.width;
+    // Skew forward slightly toward the apex so sinuses sweep forward naturally like Quercus leaves
+    const skewed = d - lobe.skew * Math.exp(-d * d * 0.65);
+    const primary = Math.exp(-Math.pow(Math.abs(skewed), 2.15) * 1.45);
+    // Subtle secondary toothlet on outer lobe shoulder
+    const shoulder = Math.exp(-Math.pow(skewed - 0.52, 2.0) * 5.2) * 0.22;
+    sum += (primary + shoulder) * lobe.amp;
+  }
+  return sum;
 }
 
 /**
- * Evaluates natural ovate-elliptic alder/beech leaf silhouette with subtle organic asymmetry.
+ * Evaluates natural pinnately-lobed autumn Oak leaf (Quercus) silhouette matching jason-leem.
  */
 export function evalLeafBladeOutline(sRaw: number): LeafOutlineSample {
   const s = clamp01(sRaw);
   const x = s * LEAF_BLADE_LENGTH;
 
-  // Gentle organic midrib S-curve so the blade feels living rather than CAD-symmetrical
-  const midribY = Math.sin(s * Math.PI * 1.15) * 0.018 - Math.sin(s * Math.PI * 2.0) * 0.007;
+  // Subtle organic midrib curve so the blade never looks rigidly symmetrical
+  const midribY = Math.sin(s * Math.PI * 1.1) * 0.015 - Math.sin(s * Math.PI * 2.1) * 0.006;
 
-  // Base smoothly widens from petiole collar (0.014) -> broad ovate belly near s=0.42 -> pointed acuminate drip-tip
-  const baseBlend = 1 - smoothstep(0.0, 0.07, s);
-  const body =
-    Math.pow(Math.max(0.0001, Math.sin(Math.pow(s, 0.78) * Math.PI)), 0.74) *
-    (1.0 + 0.14 * Math.sin(s * Math.PI * 1.4));
-  const tipTaper = 1 - smoothstep(0.84, 1.0, s) * 0.94;
-  const baseHalfW = Math.max(0.003, 0.013 * baseBlend + 0.335 * body * tipTaper);
+  // Slender cuneate base -> core lamina spine between deep sinuses -> rounded-subacute apex lobe
+  const baseBlend = 1 - smoothstep(0.0, 0.08, s);
+  const coreSpan =
+    smoothstep(0.03, 0.16, s) *
+    (1 - smoothstep(0.84, 1.0, s)) *
+    (0.112 + 0.036 * Math.sin(s * Math.PI));
+  const apexLobe =
+    Math.exp(-Math.pow((s - 0.925) / 0.055, 2.0)) * 0.072 * (1 - smoothstep(0.955, 1.0, s));
+  const baseHalfW = Math.max(0.003, 0.013 * baseBlend + coreSpan + apexLobe);
 
-  const serrationTop = evalSerration(s, 0.0);
-  const serrationBottom = evalSerration(s, 0.18);
+  const lobesTop = evalOakLobes(s, OAK_LOBES_TOP);
+  const lobesBottom = evalOakLobes(s, OAK_LOBES_BOTTOM);
 
-  // Subtle biological asymmetry (~5% wider on one side)
-  const asym = 0.048 * Math.sin(s * Math.PI * 0.95);
-  const halfWidthTop = Math.max(0.0025, baseHalfW * (1 + asym) + serrationTop);
-  const halfWidthBottom = Math.max(0.0025, baseHalfW * (1 - asym) + serrationBottom);
+  // Subtle biological asymmetry (~4% wider on one side)
+  const asym = 0.042 * Math.sin(s * Math.PI * 0.92 + 0.2);
+  const halfWidthTop = Math.max(0.0028, baseHalfW * (1 + asym) + lobesTop);
+  const halfWidthBottom = Math.max(0.0028, baseHalfW * (1 - asym) + lobesBottom);
 
   return {
     x,
     midribY,
     halfWidthTop,
     halfWidthBottom,
-    serrationTop,
-    serrationBottom,
+    serrationTop: lobesTop,
+    serrationBottom: lobesBottom,
   };
 }
 
 /**
- * Computes lateral vein intensity (0..1) and inter-vein pillow dome (0..1) in parametric blade space.
+ * Computes midrib, primary lobe-aligned lateral veins, and subtle inter-vein pillowing.
  */
 export function evalLeafVeinField(s: number, w: number): {
   midribFactor: number;
@@ -114,19 +136,20 @@ export function evalLeafVeinField(s: number, w: number): {
   interVeinPillow: number;
 } {
   const absW = Math.abs(w);
-  const midribHalfSpan = 0.042 * (1 - 0.58 * s) + 0.012;
-  const midribFactor = Math.exp(-(absW * absW) / (midribHalfSpan * midribHalfSpan)) * (1 - 0.45 * s);
+  const midribHalfSpan = 0.044 * (1 - 0.60 * s) + 0.012;
+  const midribFactor =
+    Math.exp(-(absW * absW) / (midribHalfSpan * midribHalfSpan)) * (1 - 0.42 * s);
 
-  // Lateral veins curve forward as they travel from midrib (w=0) toward margin (|w|=1)
-  const sideOffset = w >= 0 ? 0.0 : 0.022;
-  const veinStartS = s - 0.165 * Math.pow(absW, 1.12) - sideOffset;
+  // Lateral veins originate along midrib and sweep forward toward each oak lobe
+  const sideOffset = w >= 0 ? 0.0 : 0.02;
+  const veinStartS = s - 0.125 * Math.pow(absW, 1.08) - sideOffset;
 
   let lateralMax = 0;
   let nearestDelta = 1.0;
   for (let i = 0; i < LEAF_VEIN_BASES.length; i++) {
     const d = Math.abs(veinStartS - LEAF_VEIN_BASES[i]);
     if (d < nearestDelta) nearestDelta = d;
-    const width = 0.014 * (1 - 0.35 * absW);
+    const width = 0.016 * (1 - 0.3 * absW);
     const g = Math.exp(-(d * d) / (width * width));
     if (g > lateralMax) lateralMax = g;
   }
@@ -134,10 +157,9 @@ export function evalLeafVeinField(s: number, w: number): {
   const lateralMask = smoothstep(0.03, 0.14, absW) * (1 - smoothstep(0.86, 0.99, absW));
   const lateralVeinFactor = lateralMax * lateralMask;
 
-  // Soft pillowing strictly between lateral veins so grazing forest sunbeams catch each lamina rib
   const interVeinPillow =
-    smoothstep(0.012, 0.045, nearestDelta) *
-    smoothstep(0.05, 0.24, absW) *
+    smoothstep(0.014, 0.048, nearestDelta) *
+    smoothstep(0.06, 0.24, absW) *
     (1 - smoothstep(0.82, 0.99, absW));
 
   return { midribFactor, lateralVeinFactor, interVeinPillow };
@@ -167,42 +189,42 @@ export function evalLeafBladeVertex(
   const halfW = w >= 0 ? outline.halfWidthTop : outline.halfWidthBottom;
   const y = outline.midribY + w * halfW;
 
-  // Slight forward sweep on lateral margin serration tips for natural venation tension
-  const serrationSweep = (w >= 0 ? outline.serrationTop : outline.serrationBottom) * absW * 0.45;
-  const x = outline.x + serrationSweep - LEAF_BLADE_CENTER_OFFSET_X;
+  // Subtle forward sweep on outer lobe tips
+  const lobeExt = w >= 0 ? outline.serrationTop : outline.serrationBottom;
+  const x = outline.x + lobeExt * absW * 0.18 - LEAF_BLADE_CENTER_OFFSET_X;
 
-  // Natural 3D midrib arch + graceful acuminate tip droop (gives unmistakable 3D silhouette from all angles)
-  const midribArch = Math.sin(s * Math.PI) * 0.058 - Math.pow(s, 2.35) * 0.118;
-  // Botanical V-cupping along midrib + subtle downward margin curl (S-camber)
-  const vFold = (0.068 * absW - 0.048 * absW * absW) * (1 - 0.48 * Math.pow(s, 2.0));
-  // Subtle organic undulation along the blade edge
-  const edgeWave =
-    Math.sin(s * Math.PI * 3.1 + (w >= 0 ? 0.2 : 1.7)) * 0.015 * smoothstep(0.35, 1.0, absW) * Math.sin(s * Math.PI);
-  // Subtle natural roll/twist across lamina
-  const naturalTwist = w * Math.sin(s * Math.PI * 1.2) * 0.028;
+  // Natural 3D oak midrib arch + gentle apex droop + autumn lobe margin curl
+  const midribArch = Math.sin(s * Math.PI) * 0.052 - Math.pow(s, 2.3) * 0.098;
+  const vFold = (0.058 * absW - 0.044 * absW * absW) * (1 - 0.42 * Math.pow(s, 2.0));
+  const lobeCurl =
+    Math.sin(s * Math.PI * 4.4 + (w >= 0 ? 0.35 : 1.55)) *
+    0.02 *
+    smoothstep(0.32, 1.0, absW) *
+    Math.sin(s * Math.PI);
+  const naturalTwist = w * Math.sin(s * Math.PI * 1.15) * 0.032;
 
   const { midribFactor, lateralVeinFactor, interVeinPillow } = evalLeafVeinField(s, w);
 
-  // Sculpted botanical anatomy:
-  // Adaxial (+1): crisp sunken central midrib groove, gentle inter-vein dome pillows, sunken lateral veins
-  // Abaxial (-1): prominent raised rounded midrib rib and raised lateral vein ribs underneath
-  const midSurfaceZ = midribArch + vFold + edgeWave + naturalTwist;
+  const midSurfaceZ = midribArch + vFold + lobeCurl + naturalTwist;
   const halfLaminaThick =
     (0.0022 +
-      0.0026 * (1 - absW) * (1 - 0.55 * s) +
-      0.0072 * midribFactor +
+      0.0024 * (1 - absW) * (1 - 0.55 * s) +
+      0.0074 * midribFactor +
       0.0028 * lateralVeinFactor) *
-    (0.75 + 0.25 * (1 - Math.pow(s, 3.0)));
+    (0.76 + 0.24 * (1 - Math.pow(s, 3.0)));
 
-  const adaxialRelief = -0.0038 * midribFactor - 0.0020 * lateralVeinFactor + 0.0046 * interVeinPillow;
-  const abaxialRib = -0.0075 * midribFactor - 0.0032 * lateralVeinFactor;
+  const adaxialRelief =
+    -0.0034 * midribFactor - 0.0018 * lateralVeinFactor + 0.0042 * interVeinPillow;
+  const abaxialRib = -0.0078 * midribFactor - 0.0032 * lateralVeinFactor;
 
   const z =
     faceSign > 0
       ? midSurfaceZ + halfLaminaThick + adaxialRelief
       : midSurfaceZ - halfLaminaThick + abaxialRib;
 
-  const opticalThickness = clamp01(0.14 + 0.72 * midribFactor + 0.34 * lateralVeinFactor + 0.12 * (1 - absW));
+  const opticalThickness = clamp01(
+    0.12 + 0.74 * midribFactor + 0.34 * lateralVeinFactor + 0.1 * (1 - absW)
+  );
 
   // UV mapped cleanly inside [0.24..0.98, 0.06..0.94] so margin mipmapping never touches border
   const uvU = 0.24 + 0.74 * s;
@@ -224,9 +246,9 @@ export function evalLeafBladeVertex(
  */
 function evalPetiolePoint(t: number): Vec3Tuple {
   const p0 = LEAF_STEM_TIP_LOCAL;
-  const p1 = { x: -0.22 - LEAF_BLADE_CENTER_OFFSET_X, y: 0.014, z: 0.012 };
-  const p2 = { x: -0.09 - LEAF_BLADE_CENTER_OFFSET_X, y: -0.004, z: -0.002 };
-  const p3 = { x: 0.045 - LEAF_BLADE_CENTER_OFFSET_X, y: 0.001, z: -0.005 };
+  const p1 = { x: -0.22 - LEAF_BLADE_CENTER_OFFSET_X, y: 0.012, z: 0.011 };
+  const p2 = { x: -0.09 - LEAF_BLADE_CENTER_OFFSET_X, y: -0.003, z: -0.002 };
+  const p3 = { x: 0.045 - LEAF_BLADE_CENTER_OFFSET_X, y: 0.001, z: -0.004 };
 
   const omt = 1 - t;
   const omt2 = omt * omt;
@@ -292,19 +314,18 @@ function accumulateSmoothNormals(
 }
 
 /**
- * Generates a closed dual-surface volumetric 3D serrated leaf mesh with sculpted midrib,
- * raised lateral veins, beveled margin rim, and curved 3D petiole stem.
+ * Generates a closed dual-surface volumetric 3D pinnately-lobed oak leaf mesh
+ * with sculpted midrib, lateral veins, beveled margin rim, and curved 3D petiole stem.
  */
-export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
+export function buildLeafGeometryBuffers(nu = 68, nv = 18): LeafGeometryData {
   const cols = nv + 1;
   const rows = nu + 1;
   const gridVerts = rows * cols;
 
-  // Separate top, bottom, and perimeter rim vertex banks so margin bevel normals stay crisp
   const rimCount = 4 * rows + 4 * cols;
   const stemSegs = 14;
   const stemSides = 8;
-  const stemVerts = (stemSegs + 1) * (stemSides + 1) + 2; // +2 end caps
+  const stemVerts = (stemSegs + 1) * (stemSides + 1) + 2;
 
   const totalVerts = gridVerts * 2 + rimCount + stemVerts;
   const positions = new Float32Array(totalVerts * 3);
@@ -339,7 +360,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     bladeCoords[idx * 2 + 1] = wCoord;
   };
 
-  // 1. Top Adaxial & Bottom Abaxial Surfaces
   const topOffset = 0;
   const botOffset = gridVerts;
 
@@ -403,7 +423,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
   }
   const botTriCount = nu * nv * 2;
 
-  // 2. Closed Beveled Perimeter Rim stitching Top & Bottom edges
   const rimOffset = gridVerts * 2;
   let rimCursor = rimOffset;
 
@@ -419,7 +438,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
 
   const rimTriStart = indices.length;
 
-  // Top margin w = +1 (outward normal +Y)
   const wPlusPairs: Array<[number, number]> = [];
   for (let i = 0; i <= nu; i++) {
     wPlusPairs.push(pushRimPair(i / nu, 1));
@@ -430,7 +448,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     indices.push(t0, t1, b1, t0, b1, b0);
   }
 
-  // Bottom margin w = -1 (outward normal -Y)
   const wMinusPairs: Array<[number, number]> = [];
   for (let i = 0; i <= nu; i++) {
     wMinusPairs.push(pushRimPair(i / nu, -1));
@@ -441,7 +458,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     indices.push(b0, b1, t1, b0, t1, t0);
   }
 
-  // Base closure s = 0 (outward normal -X)
   const basePairs: Array<[number, number]> = [];
   for (let j = 0; j <= nv; j++) {
     basePairs.push(pushRimPair(0, (j / nv) * 2 - 1));
@@ -452,7 +468,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     indices.push(t0, t1, b1, t0, b1, b0);
   }
 
-  // Tip closure s = 1 (outward normal +X)
   const tipPairs: Array<[number, number]> = [];
   for (let j = 0; j <= nv; j++) {
     tipPairs.push(pushRimPair(1, (j / nv) * 2 - 1));
@@ -464,7 +479,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
   }
   const rimTriCount = (indices.length - rimTriStart) / 3;
 
-  // 3. 3D Curved Petiole Stem with abscission collar & seamless midrib taper
   const stemOffset = rimCursor;
   const stemTriStart = indices.length;
 
@@ -482,7 +496,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     ty /= tLen;
     tz /= tLen;
 
-    // Frame normal/binormal around tangent
     let nx = -ty;
     let ny = tx;
     let nz = 0;
@@ -494,16 +507,14 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     const by = tz * nx - tx * nz;
     const bz = tx * ny - ty * nx;
 
-    // Slight abscission collar thickening at t=0, slender petiole waist, widening smoothly into blade base
-    const collar = 0.0038 * Math.exp(-t * t * 32.0);
-    const baseFlare = 0.0052 * smoothstep(0.75, 1.0, t);
-    const radius = 0.0082 + collar + baseFlare;
+    const collar = 0.0036 * Math.exp(-t * t * 32.0);
+    const baseFlare = 0.0046 * smoothstep(0.75, 1.0, t);
+    const radius = 0.0074 + collar + baseFlare;
 
     for (let j = 0; j <= stemSides; j++) {
       const ang = (j / stemSides) * Math.PI * 2;
       const cosA = Math.cos(ang);
       const sinA = Math.sin(ang);
-      // Slightly oval cross-section (flatter on top, rounder underside)
       const ry = radius * 1.08;
       const rz = radius * 0.88;
 
@@ -537,7 +548,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
     }
   }
 
-  // Cap abscission base at t=0 so closeups of the broken stem end look solid
   const capStartIdx = stemOffset + (stemSegs + 1) * (stemSides + 1);
   const pCap0 = evalPetiolePoint(0);
   writeVert(capStartIdx, pCap0.x - 0.002, pCap0.y, pCap0.z, 0.02, 0.5, 0.0, 0.95, -0.34, 0);
@@ -559,7 +569,6 @@ export function buildLeafGeometryBuffers(nu = 56, nv = 14): LeafGeometryData {
 
   const stemTriCount = (indices.length - stemTriStart) / 3;
 
-  // Compute clean area-weighted vertex normals separately per surface group
   accumulateSmoothNormals(positions, normals, indices, topTriStart, topTriCount);
   accumulateSmoothNormals(positions, normals, indices, botTriStart, botTriCount);
   accumulateSmoothNormals(positions, normals, indices, rimTriStart, rimTriCount);

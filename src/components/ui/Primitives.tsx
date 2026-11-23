@@ -6,13 +6,10 @@ interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   size?: 'sm' | 'md' | 'lg';
 }
 
-export function Button({
-  variant = 'primary',
-  size = 'md',
-  className = '',
-  children,
-  ...props
-}: ButtonProps) {
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { variant = 'primary', size = 'md', className = '', children, ...props },
+  ref
+) {
   const base =
     'inline-flex items-center justify-center gap-2 font-medium rounded-md transition-colors duration-150 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D3A36C] focus-visible:ring-offset-2 focus-visible:ring-offset-[#101C17] disabled:opacity-50 disabled:pointer-events-none cursor-pointer';
 
@@ -32,11 +29,15 @@ export function Button({
   };
 
   return (
-    <button className={`${base} ${variants[variant]} ${sizes[size]} ${className}`} {...props}>
+    <button
+      ref={ref}
+      className={`${base} ${variants[variant]} ${sizes[size]} ${className}`}
+      {...props}
+    >
       {children}
     </button>
   );
-}
+});
 
 interface SurfacePanelProps {
   children: React.ReactNode;

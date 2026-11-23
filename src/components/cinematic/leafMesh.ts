@@ -7,6 +7,7 @@ import {
 export interface PhysicalLeafUniforms {
   uTime: { value: number };
   uFallFlutter: { value: number };
+  uStemFlex: { value: number };
   uOpacity: { value: number };
   uTreeExposure: { value: number };
   uLightIntensity: { value: number };
@@ -104,13 +105,13 @@ function createBotanicalCanvases(width = 768, height = 384): BotanicalCanvases {
       const off = pIdx * 4;
 
       if (u < 0.23) {
-        // Petiole stem region (fibrous woody-olive gradient)
+        // Slender woody autumn oak petiole matching jason-leem twigs
         const stemT = Math.max(0, Math.min(1, (u - 0.02) / 0.2));
         const fiber = Math.sin(v * 140 + fbm2D(u * 18, v * 12) * 3.5) * 0.5 + 0.5;
         const grain = fbm2D(u * 32, v * 28);
-        const rBase = 58 + stemT * 20 + fiber * 12 + (grain - 0.5) * 14;
-        const gBase = 74 + stemT * 28 + fiber * 14 + (grain - 0.5) * 14;
-        const bBase = 24 + stemT * 8 + fiber * 5;
+        const rBase = 88 + stemT * 28 + fiber * 14 + (grain - 0.5) * 16;
+        const gBase = 48 + stemT * 18 + fiber * 8 + (grain - 0.5) * 10;
+        const bBase = 26 + stemT * 8 + fiber * 4;
 
         aImg.data[off] = clampByte(rBase);
         aImg.data[off + 1] = clampByte(gBase);
@@ -118,10 +119,10 @@ function createBotanicalCanvases(width = 768, height = 384): BotanicalCanvases {
         aImg.data[off + 3] = 255;
 
         heightField[pIdx] = fiber * 0.18 + grain * 0.14;
-        rImg.data[off] = rImg.data[off + 1] = rImg.data[off + 2] = clampByte(168 + grain * 30);
+        rImg.data[off] = rImg.data[off + 1] = rImg.data[off + 2] = clampByte(188 + grain * 32);
         rImg.data[off + 3] = 255;
       } else {
-        // Blade lamina region mapped cleanly from s = [0,1], w = [-1,1]
+        // Blade lamina calibrated directly to the golden-amber / burnt-orange autumn oak leaves in jason-leem
         const s = Math.max(0, Math.min(1, (u - 0.24) / 0.74));
         const w = Math.max(-1, Math.min(1, (v - 0.5) / 0.44));
         const absW = Math.abs(w);
@@ -134,28 +135,28 @@ function createBotanicalCanvases(width = 768, height = 384): BotanicalCanvases {
         );
         const reticVein = Math.pow(1 - reticWave, 5.0) * 0.35;
 
-        // Calibrated to the rich wet beech/alder leaves on mossy_branch_opening.jpg
-        let rCol = 32 + macroPatch * 18 + (microCell - 0.5) * 14;
-        let gCol = 58 + macroPatch * 24 + (microCell - 0.5) * 16;
-        let bCol = 9 + macroPatch * 6 + (microCell - 0.5) * 6;
+        // Warm golden-amber center transitioning to richer burnt sienna toward lobe shoulders
+        const sunWarmth = (1 - smoothstep(0.3, 0.92, absW)) * (1 - 0.35 * s);
+        let rCol = 192 + macroPatch * 34 + sunWarmth * 24 + (microCell - 0.5) * 18;
+        let gCol = 98 + macroPatch * 36 + sunWarmth * 38 + (microCell - 0.5) * 14;
+        let bCol = 20 + macroPatch * 10 + sunWarmth * 8 + (microCell - 0.5) * 6;
 
-        // Subtle warm chlorophyll gradient toward outer margins & apex
-        const marginWarm = smoothstep(0.65, 0.98, absW) * (0.6 + 0.4 * s);
-        rCol += marginWarm * 11;
-        gCol += marginWarm * 9;
+        // Darker midrib & subtle shaded vein channels matching jason-leem oak venation
+        const veinBlend = Math.min(
+          1,
+          midribFactor * 0.85 + lateralVeinFactor * 0.58 + reticVein * 0.2
+        );
+        rCol = rCol * (1 - veinBlend * 0.28) + 128 * (veinBlend * 0.28);
+        gCol = gCol * (1 - veinBlend * 0.32) + 64 * (veinBlend * 0.32);
+        bCol = bCol * (1 - veinBlend * 0.25) + 18 * (veinBlend * 0.25);
 
-        // Slightly paler yellow-green midrib & curved lateral veins with subtle shaded vein furrow edge
-        const veinBlend = Math.min(1, midribFactor * 0.92 + lateralVeinFactor * 0.68 + reticVein * 0.22);
-        rCol = rCol * (1 - veinBlend) + 74 * veinBlend;
-        gCol = gCol * (1 - veinBlend) + 102 * veinBlend;
-        bCol = bCol * (1 - veinBlend) + 22 * veinBlend;
-
-        // Occasional tiny organic leaf fleck
-        const fleckNoise = fbm2D(s * 24 + 9.2, w * 24 + 3.7);
-        if (fleckNoise > 0.78) {
-          const fAmt = (fleckNoise - 0.78) * 2.1;
-          rCol = rCol * (1 - fAmt * 0.35) + 64 * (fAmt * 0.35);
-          gCol = gCol * (1 - fAmt * 0.35) + 56 * (fAmt * 0.35);
+        // Authentic dark chestnut autumn speckles/imperfections seen on jason-leem leaves
+        const fleckNoise = fbm2D(s * 26 + 9.2, w * 26 + 3.7);
+        if (fleckNoise > 0.72) {
+          const fAmt = Math.min(1, (fleckNoise - 0.72) * 3.1);
+          rCol = rCol * (1 - fAmt * 0.52) + 92 * (fAmt * 0.52);
+          gCol = gCol * (1 - fAmt * 0.56) + 42 * (fAmt * 0.56);
+          bCol = bCol * (1 - fAmt * 0.45) + 14 * (fAmt * 0.45);
         }
 
         aImg.data[off] = clampByte(rCol);
@@ -163,15 +164,14 @@ function createBotanicalCanvases(width = 768, height = 384): BotanicalCanvases {
         aImg.data[off + 2] = clampByte(bCol);
         aImg.data[off + 3] = 255;
 
-        // Heightfield for normal map (crisp vein relief + cellular micro-dimples)
         heightField[pIdx] =
           midribFactor * 0.85 +
           lateralVeinFactor * 0.52 +
           reticVein * 0.16 +
           (microCell - 0.5) * 0.15;
 
-        // Roughness: damp glossy cuticle patches ~0.28..0.40 on adaxial top, veins ~0.52
-        const rough = 76 + microCell * 24 + (1 - macroPatch) * 16 + veinBlend * 36;
+        // Autumn oak cuticle roughness: dry-waxy sheen ~0.42..0.56, veins ~0.68
+        const rough = 108 + microCell * 28 + (1 - macroPatch) * 20 + veinBlend * 42;
         const rByte = clampByte(rough);
         rImg.data[off] = rByte;
         rImg.data[off + 1] = rByte;
@@ -181,7 +181,6 @@ function createBotanicalCanvases(width = 768, height = 384): BotanicalCanvases {
     }
   }
 
-  // Convert scalar heightfield to tangent-space normal map
   const strength = 4.6;
   for (let py = 0; py < height; py++) {
     const pyUp = Math.max(0, py - 1);
@@ -216,57 +215,102 @@ function createBotanicalCanvases(width = 768, height = 384): BotanicalCanvases {
 }
 
 /**
- * Safely blends interior photographic cellular micro-detail from green_forest_leaf into
- * our UV-registered albedo canvas without ever sampling black background pixels.
+ * Extracts real photographic oak-leaf color, cellular grain, venation, and autumn mottling
+ * directly from the isolated hanging oak leaf in jason-leem-mopZf0QhPGw-unsplash_d838c284.jpg,
+ * strictly rejecting any cool teal sky pixels so zero sky fringe ever appears on the 3D blade.
  */
-function blendPhotoMicroDetail(
+function blendPhotoOakDetail(
   albedoCanvas: HTMLCanvasElement,
   img: HTMLImageElement
 ): boolean {
+  const natW = img.naturalWidth;
+  const natH = img.naturalHeight;
+  if (natW < 512 || natH < 512) return false;
+
+  // Crop only the unoccluded hanging amber oak leaf (x: 1680..1900, y: 4110..4450 of 4016x5015)
+  const sx = Math.round(natW * 0.418);
+  const sy = Math.round(natH * 0.819);
+  const sw = Math.max(64, Math.round(natW * 0.056));
+  const sh = Math.max(64, Math.round(natH * 0.068));
+
+  const cropW = 192;
+  const cropH = 256;
+  const scratch = document.createElement('canvas');
+  scratch.width = cropW;
+  scratch.height = cropH;
+  const sCtx = scratch.getContext('2d', { willReadFrequently: true });
+  if (!sCtx) return false;
+
+  sCtx.drawImage(img, sx, sy, sw, sh, 0, 0, cropW, cropH);
+  const srcData = sCtx.getImageData(0, 0, cropW, cropH).data;
+
   const w = albedoCanvas.width;
   const h = albedoCanvas.height;
-  const scratch = document.createElement('canvas');
-  scratch.width = img.naturalWidth || 512;
-  scratch.height = img.naturalHeight || 288;
-  const sCtx = scratch.getContext('2d');
-  if (!sCtx || scratch.width < 16 || scratch.height < 16) return false;
-
-  sCtx.drawImage(img, 0, 0, scratch.width, scratch.height);
-  const srcData = sCtx.getImageData(0, 0, scratch.width, scratch.height).data;
-
   const aCtx = albedoCanvas.getContext('2d');
   if (!aCtx) return false;
   const dstImg = aCtx.getImageData(0, 0, w, h);
   const dstData = dstImg.data;
+
+  // Build row-wise interior leaf spans so any sinus sample outside the photo's outline pulls safely from interior leaf tissue
+  const isWarmOakPixel = (r: number, g: number, b: number) =>
+    r > 85 && r > b + 36 && g > b + 12;
 
   for (let py = 0; py < h; py++) {
     const v = 1 - py / (h - 1);
     for (let px = 0; px < w; px++) {
       const u = px / (w - 1);
       if (u < 0.24) continue;
+
       const s = Math.max(0, Math.min(1, (u - 0.24) / 0.74));
       const wNorm = Math.max(-1, Math.min(1, (v - 0.5) / 0.44));
 
-      // Map safely inside the interior green blade of green_forest_leaf_1795360418647.jpg
-      const srcU = 0.36 + s * 0.48;
-      const srcV = 0.50 - wNorm * 0.20 * (1 - Math.abs(s - 0.45) * 0.55);
-      const sx = Math.min(scratch.width - 1, Math.max(0, Math.round(srcU * (scratch.width - 1))));
-      const sy = Math.min(scratch.height - 1, Math.max(0, Math.round(srcV * (scratch.height - 1))));
-      const sOff = (sy * scratch.width + sx) * 4;
+      // Leaf in crop runs diagonally from top-left-center (x~0.34, y~0.04) down to tip (x~0.54, y~0.94)
+      const photoY = Math.min(cropH - 1, Math.max(0, Math.round((0.06 + s * 0.86) * (cropH - 1))));
+      const midX = (0.34 + s * 0.20) * (cropW - 1);
+      const sampleX = Math.min(
+        cropW - 1,
+        Math.max(0, Math.round(midX + wNorm * cropW * 0.16 * (1 - Math.abs(s - 0.5) * 0.35)))
+      );
 
-      const sr = srcData[sOff];
-      const sg = srcData[sOff + 1];
-      const sb = srcData[sOff + 2];
-      // Strict green-interior guard: skip any dark or border pixel
-      if (sg < 55 || sg <= sb * 1.15) continue;
+      let chosenX = sampleX;
+      let offS = (photoY * cropW + chosenX) * 4;
+      let sr = srcData[offS];
+      let sg = srcData[offS + 1];
+      let sb = srcData[offS + 2];
 
-      const lum = (0.299 * sr + 0.587 * sg + 0.114 * sb) / 110;
-      const grainFactor = Math.max(0.84, Math.min(1.18, 0.88 + lum * 0.12));
+      // If sample hits a teal sky gap between lobes, step smoothly toward the verified leaf midrib
+      if (!isWarmOakPixel(sr, sg, sb)) {
+        const midXInt = Math.min(cropW - 1, Math.max(0, Math.round(midX)));
+        chosenX = Math.round(sampleX * 0.35 + midXInt * 0.65);
+        offS = (photoY * cropW + chosenX) * 4;
+        sr = srcData[offS];
+        sg = srcData[offS + 1];
+        sb = srcData[offS + 2];
+        if (!isWarmOakPixel(sr, sg, sb)) {
+          offS = (photoY * cropW + midXInt) * 4;
+          sr = srcData[offS];
+          sg = srcData[offS + 1];
+          sb = srcData[offS + 2];
+          if (!isWarmOakPixel(sr, sg, sb)) continue;
+        }
+      }
+
+      // Match natural golden-ochre oak foliage value & autumn mottling directly from jason-leem
+      const photoLum = (0.299 * sr + 0.587 * sg + 0.114 * sb) / 255;
+      const liftedR = Math.min(255, sr * 1.03 + 4);
+      const liftedG = Math.min(255, sg * 1.01 + 2);
+      const liftedB = Math.min(255, sb * 0.92);
 
       const dOff = (py * w + px) * 4;
-      dstData[dOff] = clampByte(dstData[dOff] * grainFactor);
-      dstData[dOff + 1] = clampByte(dstData[dOff + 1] * grainFactor);
-      dstData[dOff + 2] = clampByte(dstData[dOff + 2] * grainFactor);
+      const blendW = 0.68;
+      dstData[dOff] = clampByte(dstData[dOff] * (1 - blendW) + liftedR * blendW);
+      dstData[dOff + 1] = clampByte(dstData[dOff + 1] * (1 - blendW) + liftedG * blendW);
+      dstData[dOff + 2] = clampByte(dstData[dOff + 2] * (1 - blendW) + liftedB * blendW);
+      // Micro-grain contrast modulation
+      const contrastMod = 0.94 + photoLum * 0.12;
+      dstData[dOff] = clampByte(dstData[dOff] * contrastMod);
+      dstData[dOff + 1] = clampByte(dstData[dOff + 1] * contrastMod);
+      dstData[dOff + 2] = clampByte(dstData[dOff + 2] * contrastMod);
     }
   }
 
@@ -279,7 +323,7 @@ export function createPhysicalLeafBundle(
   leafPhotoUrl: string,
   onTextureUpdated: () => void
 ): PhysicalLeafBundle {
-  const geoData = buildLeafGeometryBuffers(56, 14);
+  const geoData = buildLeafGeometryBuffers(68, 18);
 
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(geoData.positions, 3));
@@ -321,7 +365,7 @@ export function createPhysicalLeafBundle(
   img.crossOrigin = 'anonymous';
   img.onload = () => {
     if (cancelled) return;
-    if (blendPhotoMicroDetail(albedoCanvas, img)) {
+    if (blendPhotoOakDetail(albedoCanvas, img)) {
       albedoTex.needsUpdate = true;
       onTextureUpdated();
     }
@@ -330,15 +374,16 @@ export function createPhysicalLeafBundle(
 
   const uniforms: PhysicalLeafUniforms = {
     uTime: { value: 0 },
-    uFallFlutter: { value: 0.14 },
+    uFallFlutter: { value: 0.12 },
+    uStemFlex: { value: 0 },
     uOpacity: { value: 0 },
     uTreeExposure: { value: 0 },
-    uLightIntensity: { value: 0.58 },
+    uLightIntensity: { value: 0.85 },
     uHeightNorm: { value: 1 },
     uColorAging: { value: 0 },
-    uSubsurface: { value: 0.22 },
+    uSubsurface: { value: 0.42 },
     uContactDip: { value: 0 },
-    uLeafSoftness: { value: 0.52 },
+    uLeafSoftness: { value: 0.12 },
     uCanopyPatchLight: { value: 1.0 },
   };
 
@@ -346,13 +391,13 @@ export function createPhysicalLeafBundle(
     color: 0xffffff,
     map: albedoTex,
     normalMap: normalTex,
-    normalScale: new THREE.Vector2(1.35, 1.35),
+    normalScale: new THREE.Vector2(1.25, 1.25),
     roughnessMap: roughnessTex,
     roughness: 1.0,
     metalness: 0.0,
-    clearcoat: 0.34,
-    clearcoatRoughness: 0.32,
-    ior: 1.46,
+    clearcoat: 0.16,
+    clearcoatRoughness: 0.48,
+    ior: 1.44,
     transparent: true,
     opacity: 1.0,
     depthWrite: true,
@@ -371,6 +416,7 @@ export function createPhysicalLeafBundle(
         attribute vec2 aBladeCoord;
         uniform float uTime;
         uniform float uFallFlutter;
+        uniform float uStemFlex;
         uniform float uContactDip;
         varying float vLeafPart;
         varying float vThickness;
@@ -384,10 +430,17 @@ export function createPhysicalLeafBundle(
         vThickness = aThickness;
         vBladeCoord = aBladeCoord;
 
+        // Elastic petiole-to-blade flex under wind tug just before detachment (stem base x=-0.34 stays locked on twig)
+        float stemReach = smoothstep(-0.32, 0.72, aBladeCoord.x);
+        float flexBendY = -uStemFlex * stemReach * stemReach * 0.16;
+        float flexBendZ = uStemFlex * stemReach * (0.055 + 0.035 * aBladeCoord.y);
+        transformed.y += flexBendY;
+        transformed.z += flexBendZ;
+
         float bladeFlex = smoothstep(0.02, 0.28, aBladeCoord.x);
-        float flutterWave = sin(uTime * 2.45 + aBladeCoord.x * 5.0 + aBladeCoord.y * 2.5) * 0.015 * uFallFlutter;
-        float aeroTorsion = aBladeCoord.y * sin(uTime * 1.9 + aBladeCoord.x * 2.6) * 0.048 * uFallFlutter;
-        float meniscusCurve = (0.026 * aBladeCoord.x * aBladeCoord.x - 0.012) * uContactDip;
+        float flutterWave = sin(uTime * 2.35 + aBladeCoord.x * 4.8 + aBladeCoord.y * 2.4) * 0.014 * uFallFlutter;
+        float aeroTorsion = aBladeCoord.y * sin(uTime * 1.85 + aBladeCoord.x * 2.5) * 0.046 * uFallFlutter;
+        float meniscusCurve = (0.024 * aBladeCoord.x * aBladeCoord.x - 0.011) * uContactDip;
         transformed.z += (flutterWave + aeroTorsion + meniscusCurve) * bladeFlex;`
       )
       .replace(
@@ -416,52 +469,47 @@ export function createPhysicalLeafBundle(
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-        // Botanical dual-surface contrast: abaxial underside is slightly paler & cooler matte sage
+        // Abaxial oak underside is slightly paler matte ochre-tan matching jason-leem underside leaves
         float undersideMask = smoothstep(0.2, -0.65, vLeafPart);
-        vec3 undersideTint = diffuseColor.rgb * vec3(1.18, 1.24, 1.18) + vec3(0.008, 0.012, 0.007);
-        diffuseColor.rgb = mix(diffuseColor.rgb, undersideTint, undersideMask * 0.76);
+        vec3 undersideTint = diffuseColor.rgb * vec3(1.06, 1.02, 0.94) + vec3(0.018, 0.014, 0.008);
+        diffuseColor.rgb = mix(diffuseColor.rgb, undersideTint, undersideMask * 0.72);
 
-        // Restrained progression: deep forest green -> muted olive -> subtle warm olive-ochre along edges (never bright tan)
-        float marginLead = smoothstep(0.28, 0.96, max(abs(vBladeCoord.y), smoothstep(0.55, 1.0, vBladeCoord.x)));
-        float age = clamp(uColorAging * (0.82 + 0.18 * marginLead), 0.0, 1.0);
-        float baseLuma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-        vec3 mutedOlive = mix(diffuseColor.rgb, vec3(baseLuma * 0.95, baseLuma * 0.90, baseLuma * 0.42), 0.54);
-        vec3 subtleOchre = mix(mutedOlive, vec3(baseLuma * 1.12, baseLuma * 0.85, baseLuma * 0.34), 0.46 + 0.32 * marginLead);
-
-        vec3 agedAlbedo = mix(diffuseColor.rgb, mutedOlive, smoothstep(0.0, 0.48, age));
-        agedAlbedo = mix(agedAlbedo, subtleOchre, smoothstep(0.45, 1.0, age));
-        diffuseColor.rgb = agedAlbedo;`
+        // Subtle moisture darkening only when resting damp on dark pond meniscus (uColorAging -> 0.45)
+        vec3 dampSienna = diffuseColor.rgb * vec3(0.76, 0.68, 0.58);
+        diffuseColor.rgb = mix(diffuseColor.rgb, dampSienna, clamp(uColorAging, 0.0, 1.0));`
       )
       .replace(
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
-        // Waxy damp adaxial cuticle (~0.32..0.42) vs fibrous matte abaxial underside (~0.82) vs petiole (~0.68)
         float abaxialWeight = smoothstep(0.15, -0.65, vLeafPart);
         float petioleWeight = 1.0 - smoothstep(0.0, 0.35, abs(vLeafPart));
-        roughnessFactor = mix(roughnessFactor, 0.82, abaxialWeight * 0.80);
-        roughnessFactor = mix(roughnessFactor, 0.68, petioleWeight * 0.85);`
+        roughnessFactor = mix(roughnessFactor, 0.85, abaxialWeight * 0.82);
+        roughnessFactor = mix(roughnessFactor, 0.76, petioleWeight * 0.85);`
       )
       .replace(
         '#include <lights_physical_fragment>',
         `#include <lights_physical_fragment>
-        material.clearcoat *= smoothstep(-0.2, 0.55, vLeafPart) * (1.0 - uColorAging * 0.45);`
+        material.clearcoat *= smoothstep(-0.2, 0.55, vLeafPart);`
       )
       .replace(
         '#include <opaque_fragment>',
-        `vec3 sunBackDir = normalize(vec3(0.45, 0.62, -0.64));
+        `// Inherit sunlit golden-hour sky illumination in oak canopy -> cool shaded woodland basin over dark water
+        vec3 sunBackDir = normalize(vec3(-0.55, 0.68, -0.48));
         vec3 leafViewDir = normalize(cameraPosition - vLeafWorldPos);
-        float backAlign = pow(clamp(dot(-leafViewDir, sunBackDir) * 0.5 + 0.5, 0.0, 1.0), 2.4);
-        float thinLamina = clamp(1.0 - vThickness, 0.05, 0.90);
+        float backAlign = pow(clamp(dot(-leafViewDir, sunBackDir) * 0.5 + 0.5, 0.0, 1.0), 2.1);
+        float thinLamina = clamp(1.0 - vThickness, 0.06, 0.92);
         float canopyReveal = smoothstep(0.0, 0.92, uTreeExposure);
-        // Smooth transition from sunlit canopy branch -> open midair -> moody twilight lake atmosphere
-        float basinTwilight = smoothstep(0.0, 0.68, uHeightNorm);
-        float lakeMoodGain = mix(0.38, 0.96, basinTwilight);
-        vec3 atmosphereTint = mix(vec3(0.76, 0.88, 0.94), vec3(1.0, 0.98, 0.93), basinTwilight);
-        float envGain = lakeMoodGain * (0.76 + 0.24 * uLightIntensity) * uCanopyPatchLight * canopyReveal;
-        envGain *= mix(1.0, 0.94, uLeafSoftness);
 
-        vec3 subTint = mix(vec3(0.28, 0.42, 0.04), vec3(0.32, 0.26, 0.05), uColorAging);
-        vec3 backlitGlow = subTint * uSubsurface * thinLamina * (0.10 + 0.90 * backAlign) * (0.20 + 0.80 * basinTwilight) * canopyReveal;
+        float basinTwilight = smoothstep(0.02, 0.68, uHeightNorm);
+        float envGain = mix(0.56, 1.06, basinTwilight) * (0.76 + 0.24 * uLightIntensity) * uCanopyPatchLight * canopyReveal;
+        envGain *= mix(1.0, 0.93, uLeafSoftness);
+
+        // Warm golden-amber sky-lit canopy grade -> warm muted autumnal stream ambient
+        vec3 atmosphereTint = mix(vec3(0.95, 0.88, 0.78), vec3(1.04, 0.96, 0.84), basinTwilight);
+
+        // Warm translucent amber sunlight passing through thin autumn oak lamina in upper canopy
+        vec3 subTint = vec3(0.86, 0.44, 0.04);
+        vec3 backlitGlow = subTint * uSubsurface * thinLamina * (0.22 + 0.78 * backAlign) * (0.18 + 0.82 * basinTwilight) * canopyReveal;
 
         outgoingLight = outgoingLight * atmosphereTint * envGain + backlitGlow;
         diffuseColor.a *= uOpacity;
@@ -470,7 +518,7 @@ export function createPhysicalLeafBundle(
       );
   };
 
-  material.customProgramCacheKey = () => 'ecosonic-physical-leaf-v1';
+  material.customProgramCacheKey = () => 'ecosonic-oak-leaf-v2';
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.renderOrder = 2;

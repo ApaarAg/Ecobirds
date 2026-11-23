@@ -139,6 +139,8 @@ export interface AdapterDiagnostics {
   adapterName: string;
   isDemoMode: boolean;
   protocolVersion: string;
+  datasetId: string | null;
+  adapterStatus: 'ready' | 'degraded' | 'offline';
   lastSyncIso: string | null;
   browserAudioApiSupported: boolean;
   mediaDevicesSupported: boolean;

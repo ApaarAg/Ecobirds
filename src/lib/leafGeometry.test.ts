@@ -7,13 +7,15 @@ import {
   LEAF_STEM_TIP_LOCAL,
 } from './leafGeometry.ts';
 
-test('evalLeafBladeOutline produces asymmetrical serrated ovate profile', () => {
+test('evalLeafBladeOutline produces asymmetrical pinnately-lobed oak profile with deep sinuses', () => {
   const base = evalLeafBladeOutline(0.0);
-  const mid = evalLeafBladeOutline(0.42);
+  const lobe = evalLeafBladeOutline(0.42);
+  const sinus = evalLeafBladeOutline(0.51);
   const tip = evalLeafBladeOutline(1.0);
 
-  assert.ok(mid.halfWidthTop > 0.25 && mid.halfWidthBottom > 0.25);
-  assert.ok(mid.halfWidthTop !== mid.halfWidthBottom, 'natural left/right botanical asymmetry');
+  assert.ok(lobe.halfWidthTop > 0.25 && lobe.halfWidthBottom > 0.25);
+  assert.ok(lobe.halfWidthTop !== lobe.halfWidthBottom, 'natural left/right botanical asymmetry');
+  assert.ok(sinus.halfWidthTop < lobe.halfWidthTop * 0.72, 'deep oak sinus between lobes');
   assert.ok(base.halfWidthTop < 0.04);
   assert.ok(tip.halfWidthTop < 0.02);
 });

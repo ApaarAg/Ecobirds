@@ -8,8 +8,6 @@ import {
 } from '../../audio/soundscapeEngine';
 import {
   computeCinematicTimeline,
-  computeOpeningAutoProgress,
-  OPENING_DURATION_SEC,
   OPENING_SETTLE_PROGRESS,
   type AcousticStructureState,
   type CinematicTimelineState,
@@ -58,9 +56,7 @@ export function CinematicHero({ onNavbarVisibilityChange }: CinematicHeroProps) 
   const timelineRef = useRef<CinematicTimelineState>(computeCinematicTimeline(0));
   const pointerTargetRef = useRef({ x: 0, y: 0 });
   const scrollProgressRef = useRef(0);
-  const openingElapsedRef = useRef(0);
-  const openingBaseRef = useRef(0);
-  const scrollCapturedRef = useRef(false);
+  const smoothedProgressRef = useRef(0);
   const lastTickMsRef = useRef<number | null>(null);
 
   const [webglAvailable, setWebglAvailable] = useState(true);
@@ -164,32 +160,25 @@ export function CinematicHero({ onNavbarVisibilityChange }: CinematicHeroProps) 
       trigger: container,
       start: 'top top',
       end: 'bottom bottom',
-      scrub: 0.42,
+      scrub: 0.18,
       onUpdate: (self) => {
         scrollProgressRef.current = self.progress;
       },
     });
 
     scrollProgressRef.current = trigger.progress;
-    if (trigger.progress > 0.015) {
-      scrollCapturedRef.current = true;
-    }
+    smoothedProgressRef.current = trigger.progress;
 
     const syncTimeline = (dt: number) => {
-      const sp = scrollProgressRef.current;
-      if (!scrollCapturedRef.current && sp <= 0.015) {
-        openingElapsedRef.current = Math.min(
-          OPENING_DURATION_SEC,
-          openingElapsedRef.current + dt
-        );
-        openingBaseRef.current = computeOpeningAutoProgress(openingElapsedRef.current);
-      } else if (sp > 0.015) {
-        scrollCapturedRef.current = true;
-      }
+      const targetProgress = scrollProgressRef.current;
+      // Responsive smooth scroll interpolation so states flow continuously forward and backward without lag
+      const alpha = dt > 0 ? 1 - Math.exp(-16.0 * dt) : 1;
+      const effective =
+        smoothedProgressRef.current + (targetProgress - smoothedProgressRef.current) * alpha;
+      smoothedProgressRef.current =
+        Math.abs(targetProgress - effective) < 0.0002 ? targetProgress : effective;
 
-      const base = openingBaseRef.current;
-      const effective = base + sp * (1 - base);
-      const next = computeCinematicTimeline(effective);
+      const next = computeCinematicTimeline(smoothedProgressRef.current);
       timelineRef.current = next;
 
       container.dataset.phase = next.phase;

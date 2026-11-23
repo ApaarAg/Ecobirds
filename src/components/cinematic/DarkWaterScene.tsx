@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { LightState } from '../../lib/cinematicTimeline';
 
-const LEAF_WATER_IMG = '/src/assets/images/rainforest_dark_pool_doc_1795425510941.jpg';
+const LEAF_WATER_IMG = '/assets/aistudio/donnie-rosie-5z1FylG3Qf0-unsplash_334b210d.jpg';
 
 interface RipplePacket {
   x: number;
@@ -80,7 +80,20 @@ export function DarkWaterScene({
       const octx = off.getContext('2d', { willReadFrequently: true });
       if (!octx) return;
 
-      octx.drawImage(img, 0, 0, w, h);
+      const srcAspect = img.naturalWidth / Math.max(1, img.naturalHeight);
+      const dstAspect = w / Math.max(1, h);
+      let sx = 0;
+      let sy = 0;
+      let sw = img.naturalWidth;
+      let sh = img.naturalHeight;
+      if (srcAspect > dstAspect) {
+        sw = Math.round(img.naturalHeight * dstAspect);
+        sx = Math.round((img.naturalWidth - sw) * 0.5);
+      } else {
+        sh = Math.round(img.naturalWidth / dstAspect);
+        sy = Math.round((img.naturalHeight - sh) * 0.5);
+      }
+      octx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
       const src = octx.getImageData(0, 0, w, h).data;
       const len = w * h;
 
@@ -103,10 +116,9 @@ export function DarkWaterScene({
         b[i] = bb;
         const l = 0.299 * rr + 0.587 * gg + 0.114 * bb;
         lum[i] = l;
-        // Water in the photograph is dark neutral obsidian (low luminance & low warmth)
-        const warmth = Math.abs(rr - bb) + Math.max(0, gg - bb);
-        const waterMask = l < 24 && warmth < 14 ? 1 : Math.max(0, Math.min(1, (28 - l) / 14));
-        isWater[i] = waterMask;
+        // Close-up stream frame: cool sky ripples (bb >= rr - 10) and water sheen across surface
+        const coolHighlight = Math.max(0, Math.min(1, (bb - rr + 24) / 48));
+        isWater[i] = Math.max(0.45, Math.min(1, 0.55 + coolHighlight * 0.45));
       }
 
       // Central-difference surface relief gradients for physical raking light & dew speculars
@@ -200,7 +212,7 @@ export function DarkWaterScene({
       const activeRipples = ripplesRef.current;
       const waterWake = lState.waterMotion;
 
-      const ambientFloor = 0.045;
+      const ambientFloor = 0.68;
       const beamStrength = lState.intensity;
 
       for (let y = 0; y < h; y++) {
@@ -208,26 +220,22 @@ export function DarkWaterScene({
         const dy = py - ly;
         const row = y * w;
 
-        // Subtle horizontal vignette so edges blend into #050605 seamlessly
-        const edgeY = Math.min(1, Math.min(py / 0.14, (1 - py) / 0.14));
+        const edgeY = Math.min(1, Math.min(py / 0.08, (1 - py) / 0.08));
 
         for (let x = 0; x < w; x++) {
           const i = row + x;
           const px = x / w;
           const dx = px - lx;
 
-          // Rotated anisotropic beam distance
           const rx = dx * cosA - dy * sinA;
           const ry = dx * sinA + dy * cosA;
           const dist2 = rx * rx * invSigX2 + ry * ry * invSigY2;
 
-          // Edge dissolve into pitch-black room
-          const edgeX = Math.min(1, Math.min(px / 0.12, (1 - px) / 0.12));
-          const vignette = edgeX * edgeY;
+          const edgeX = Math.min(1, Math.min(px / 0.06, (1 - px) / 0.06));
+          const vignette = 0.84 + 0.16 * edgeX * edgeY;
 
           const beam = Math.exp(-dist2) * beamStrength;
 
-          // Physical directional light vector pointing from beam focus toward pixel
           const lvx = -dx * 2.4;
           const lvy = -dy * 2.4;
           const lvz = 0.65;
@@ -241,15 +249,13 @@ export function DarkWaterScene({
           const nzz = 0.85;
 
           const ndotl = Math.max(0, nxx * dirX + nyy * dirY + nzz * dirZ);
-          // Half-vector approximation for wet moisture glints
           const hx = dirX * 0.5;
           const hy = dirY * 0.5;
           const hz = (dirZ + 1) * 0.5;
           const hInv = 1 / Math.sqrt(hx * hx + hy * hy + hz * hz);
           const ndoth = Math.max(0, (nxx * hx + nyy * hy + nzz * hz) * hInv);
-          const specPow = Math.pow(ndoth, 24) * wet[i] * beam * 0.95;
+          const specPow = Math.pow(ndoth, 24) * wet[i] * beam * 0.42;
 
-          // Physical water wave refraction / caustic shimmer
           let waterBoost = 0;
           let sampleOffset = 0;
           const waterWeight = isWater[i];
@@ -275,22 +281,20 @@ export function DarkWaterScene({
                 waveSlope += Math.sin(band * 155) * env * 1.3;
               }
             }
-            waterBoost = Math.max(0, waveSlope) * (0.35 + beam * 1.65) * 18 * waterWeight;
+            waterBoost = Math.max(0, waveSlope) * (0.25 + beam * 0.85) * 12 * waterWeight;
             const shiftX = Math.round(waveSlope * 2.2 * waterWeight);
             const sx = Math.min(w - 1, Math.max(0, x + shiftX));
             sampleOffset = row + sx - i;
           }
 
           const srcIdx = i + sampleOffset;
-          const lit =
-            (ambientFloor + beam * (0.45 + ndotl * 1.18)) * vignette;
+          const lit = (ambientFloor + beam * (0.18 + ndotl * 0.24)) * vignette;
 
-          const rr = r[srcIdx] * lit + specPow * 212 + waterBoost * 0.72;
-          const gg = g[srcIdx] * lit + specPow * 214 + waterBoost * 0.84;
-          const bb = b[srcIdx] * lit + specPow * 206 + waterBoost * 0.88;
+          const rr = r[srcIdx] * lit * 1.01 + specPow * 214 + waterBoost * 0.88;
+          const gg = g[srcIdx] * lit * 0.96 + specPow * 204 + waterBoost * 0.84;
+          const bb = b[srcIdx] * lit * 0.88 + specPow * 190 + waterBoost * 0.78;
 
           const outIdx = i * 4;
-          // Deep neutral dark floor #050605
           out[outIdx] = rr < 5 ? 5 : rr > 255 ? 255 : rr;
           out[outIdx + 1] = gg < 6 ? 6 : gg > 255 ? 255 : gg;
           out[outIdx + 2] = bb < 5 ? 5 : bb > 255 ? 255 : bb;
