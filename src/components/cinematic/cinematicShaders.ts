@@ -22,7 +22,10 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
   uniform float uForestReady;
 
   uniform vec2 uResolution;
+  uniform float uTreeTexAspect;
+  uniform float uTreeCropShiftX;
   uniform float uTexAspect;
+  uniform vec2 uForestCropOffset;
   uniform float uTime;
   uniform vec2 uMouse;
 
@@ -43,9 +46,11 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
   uniform float uLightRadius;
   uniform float uWaterMotion;
 
-  // Falling leaf lake-shadow, meniscus contact & concentric impact ripples
+  // Falling leaf lake-shadow, meniscus contact & dispersive impact ripples
   uniform vec2 uLeafShadowPos;
   uniform float uLeafHeightNorm;
+  uniform float uLeafYaw;
+  uniform float uLeafOpacity;
   uniform vec2 uImpactOrigin;
   uniform float uImpactRippleProgress;
   uniform float uImpactRippleStrength;
@@ -62,6 +67,11 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
   uniform float uSettleRollRad;
   uniform float uHazeOpacity;
   uniform float uDarknessVeil;
+
+  // Web Audio AnalyserNode FFT bands & acoustic emergence uniforms
+  uniform float uWaterResonance;
+  uniform float uAcousticTopography;
+  uniform vec4 uAudioBands; // x=low, y=mid, z=high, w=amplitude
 
   varying vec2 vWorldUv;
   varying vec4 vClipPos;
@@ -84,8 +94,19 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
       centered.x *= targetAspect / texAspect;
     }
     if (targetAspect < 1.0) {
-      centered.x += 0.17;
+      centered.x += uTreeCropShiftX;
     }
+    return centered + 0.5;
+  }
+
+  vec2 coverUvForest(vec2 uv, float targetAspect, float texAspect, vec2 cropOffset) {
+    vec2 centered = uv - 0.5;
+    if (targetAspect > texAspect) {
+      centered.y *= texAspect / targetAspect;
+    } else {
+      centered.x *= targetAspect / texAspect;
+    }
+    centered += cropOffset;
     return centered + 0.5;
   }
 
@@ -124,6 +145,103 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
     return mat2(c, -s, s, c) * v;
   }
 
+  float computePondWaterMask(vec2 lUv) {
+    // Far shoreline edge where wet mossy bank & roots meet calm dark pool (~0.50-0.57 in rainforest_dark_pool_doc)
+    float farShoreY = 0.562 - 0.048 * smoothstep(0.58, 0.96, lUv.x) - 0.024 * (1.0 - smoothstep(0.04, 0.34, lUv.x));
+    float farShoreMask = smoothstep(farShoreY + 0.016, farShoreY - 0.042, lUv.y);
+    // Feather bottom & horizontal borders smoothly so UV refraction never hits ClampToEdge
+    float nearShoreMask = smoothstep(0.008, 0.036, lUv.y);
+    float horizEdgeMask = smoothstep(0.012, 0.055, lUv.x) * (1.0 - smoothstep(0.945, 0.988, lUv.x));
+    return farShoreMask * nearShoreMask * horizEdgeMask;
+  }
+
+  float evalPondHeight(vec2 lScreenUv, vec2 lUv, float screenAspect, float waterMask) {
+    if (waterMask <= 0.001) return 0.0;
+
+    // Perspective distance softening near far misty shore
+    float perspScale = mix(1.0, 0.58, smoothstep(0.18, 0.56, lUv.y));
+    float h = 0.0;
+
+    // 1. Continuous ambient forest pond surface micro-undulation (four crossed wavelets)
+    vec2 pCoord = vec2(lUv.x * uTexAspect, lUv.y * 1.65);
+    float ambWave =
+      sin(dot(pCoord, vec2(19.0, 11.0)) + uTime * 0.72) * 0.34 +
+      sin(dot(pCoord, vec2(-14.0, 23.0)) - uTime * 0.58 + 1.1) * 0.28 +
+      sin(dot(pCoord, vec2(29.0, -17.0)) + uTime * 0.94 + 2.4) * 0.22 +
+      sin(dot(pCoord, vec2(8.0, 34.0)) - uTime * 0.44 + 0.4) * 0.16;
+    float ambAmp = (0.00062 + 0.00058 * uWaterMotion) * perspScale;
+    h += ambWave * ambAmp;
+
+    vec2 impDelta = lScreenUv - uImpactOrigin;
+    float foreshortenY = mix(1.62, 2.02, smoothstep(0.18, 0.56, lUv.y));
+    vec2 pondDelta = vec2(impDelta.x * screenAspect, impDelta.y * foreshortenY);
+    float r = length(pondDelta);
+
+    // 2. Leaf touchdown meniscus depression & dispersive capillary-gravity wave packet
+    if (uImpactRippleStrength > 0.003 || uContactDip > 0.003) {
+      // Leaf-aligned anisotropic meniscus depression & capillary rim directly around blade footprint
+      if (uContactDip > 0.003) {
+        vec2 bladeLocal = rotate2d(pondDelta, -uLeafYaw * 0.65);
+        vec2 menVec = bladeLocal * vec2(0.74, 1.38);
+        float mDist = length(menVec);
+        float depression = -exp(-(mDist * mDist) / 0.0011) * 0.0095;
+        float capRim = exp(-pow(mDist - 0.046, 2.0) / 0.00055) * 0.0048;
+        float capRipple = exp(-(mDist * mDist) / 0.0065) * sin(mDist * 118.0 - uTime * 3.0) * 0.0022;
+        h += (depression + capRim + capRipple) * uContactDip;
+      }
+
+      // Dispersive expanding wave packet (organic directional irregularity + cylindrical/viscous damping)
+      if (uImpactRippleStrength > 0.003) {
+        float ang = atan(pondDelta.y, pondDelta.x);
+        float organicWarp =
+          1.0 +
+          0.048 * sin(ang * 2.0 - uLeafYaw * 1.4 + 0.4) +
+          0.024 * cos(ang * 3.0 + r * 8.0) +
+          0.016 * sin(ang * 5.0 - 1.1);
+        float rEff = r * organicWarp;
+        float front = mix(0.044, 0.84, uImpactRippleProgress);
+        float originSmooth = smoothstep(0.008, 0.038, r);
+        float radialAtten = inversesqrt(1.0 + r * 12.5) * exp(-r * 1.75);
+
+        float b1 = rEff - front;
+        float b2 = rEff - max(0.0, front - 0.078);
+        float b3 = rEff - max(0.0, front - 0.150);
+
+        float w1 = exp(-(b1 * b1) / 0.0021) * cos(b1 * 62.0);
+        float w2 = exp(-(b2 * b2) / 0.0014) * cos(b2 * 88.0) * 0.64;
+        float w3 = exp(-(b3 * b3) / 0.0010) * cos(b3 * 116.0) * 0.36;
+        float wakeBehind = smoothstep(front + 0.02, front - 0.09, rEff) * exp(-max(0.0, front - rEff) * 3.8) * cos((rEff - front) * 42.0) * 0.24;
+
+        h += (w1 + w2 + w3 + wakeBehind) * 0.0135 * uImpactRippleStrength * originSmooth * radialAtten * perspScale;
+      }
+    }
+
+    // 3. Interactive click ripple (same physical dispersive wave heightfield)
+    if (uRippleActive > 0.5) {
+      vec2 rpDelta = vec2((lUv.x - uRippleCenter.x) * uTexAspect, (lUv.y - uRippleCenter.y) * 1.72);
+      float rpDist = length(rpDelta);
+      float rpFront = uRippleAge * 0.24;
+      float rpBand = rpDist - rpFront;
+      float rpBand2 = rpDist - max(0.0, rpFront - 0.045);
+      float rpDecay = exp(-uRippleAge * 0.88) * inversesqrt(1.0 + rpDist * 11.0) * smoothstep(0.004, 0.024, rpDist);
+      float rpWave =
+        exp(-(rpBand * rpBand) / 0.0009) * cos(rpBand * 112.0) +
+        exp(-(rpBand2 * rpBand2) / 0.0007) * cos(rpBand2 * 148.0) * 0.58;
+      h += rpWave * 0.0105 * rpDecay * perspScale;
+    }
+
+    // 4. Stage 2: Sound becomes subtly visible inside water via coherent harmonic standing-wave interference
+    if (uWaterResonance > 0.003) {
+      float lowRes = cos(r * 24.0 - uTime * 1.45) * sin(pondDelta.x * 11.0 + uTime * 0.55) * (0.30 + 0.70 * uAudioBands.x);
+      float midRes = sin(pondDelta.x * 38.0 + uTime * 1.15) * cos(pondDelta.y * 48.0 - uTime * 0.95) * (0.30 + 0.70 * uAudioBands.y);
+      float highRes = sin(r * 78.0 - uTime * 2.55) * exp(-r * 1.9) * (0.25 + 0.75 * uAudioBands.z);
+      float audioScale = 0.75 + 0.85 * uAudioBands.w;
+      h += (lowRes * 0.0022 + midRes * 0.0014 + highRes * 0.0009) * uWaterResonance * audioScale * perspScale;
+    }
+
+    return h * waterMask;
+  }
+
   void main() {
     float screenAspect = max(0.2, uResolution.x / max(1.0, uResolution.y));
     vec2 screenUv = 0.5 + 0.5 * (vClipPos.xy / max(0.0001, vClipPos.w));
@@ -136,13 +254,13 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
     // A1. Mature Living Forest Tree in Deep Evening Twilight (natural exposure progression)
     if (uTreeReady > 0.5 && uTreeExposure > 0.001 && uCamPanNormY > 0.015 && uPortalProgress < 0.995) {
       vec2 treeScreenUv = screenUv + vec2(uCamPanOffsetX, -(1.0 - uCamPanNormY) * 0.68);
-      vec2 treeUv = coverUvTree(treeScreenUv, screenAspect, uTexAspect);
+      vec2 treeUv = coverUvTree(treeScreenUv, screenAspect, uTreeTexAspect);
       // Full-bleed when stationary, wide organic feather during downward camera pan so Image 01 dissolves seamlessly into water
-      float panFeather = mix(0.06, 0.38, smoothstep(0.96, 0.42, uCamPanNormY));
+      float panFeather = mix(0.002, 0.38, smoothstep(0.96, 0.42, uCamPanNormY));
       float treeVertBounds =
-        smoothstep(0.015, panFeather, treeScreenUv.y) *
-        (1.0 - smoothstep(0.985, 1.015, treeScreenUv.y)) *
-        smoothstep(0.001, 0.018, treeUv.y) *
+        smoothstep(0.0, panFeather, treeScreenUv.y) *
+        (1.0 - smoothstep(0.996, 1.004, treeScreenUv.y)) *
+        smoothstep(0.001, 0.012, treeUv.y) *
         (1.0 - smoothstep(0.988, 0.999, treeUv.y));
       float treeHorizBounds =
         smoothstep(0.002, 0.018, treeUv.x) *
@@ -151,12 +269,12 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
       if (treeVertBounds > 0.001 && treeHorizBounds > 0.001) {
         vec2 safeTreeUv = clamp(treeUv, 0.006, 0.994);
 
-        // Organic forest breeze across the overhanging alder foliage cluster (ramps subtly before leaf detachment)
+        // Organic forest breeze across the overhanging leafy branch cluster (ramps subtly before leaf detachment)
         float foliageMask =
           smoothstep(0.36, 0.52, safeTreeUv.x) *
-          (1.0 - smoothstep(0.88, 0.99, safeTreeUv.x)) *
-          smoothstep(0.22, 0.34, safeTreeUv.y) *
-          (1.0 - smoothstep(0.68, 0.78, safeTreeUv.y));
+          (1.0 - smoothstep(0.92, 0.99, safeTreeUv.x)) *
+          smoothstep(0.42, 0.56, safeTreeUv.y) *
+          (1.0 - smoothstep(0.92, 0.99, safeTreeUv.y));
         float gustScale = 1.0 + uWindGust * 2.2;
         vec2 breezeShift = vec2(
           sin(uTime * 1.15 + safeTreeUv.y * 11.0 + safeTreeUv.x * 4.0) * 0.00085,
@@ -176,167 +294,172 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
           treeSample = mix(treeSample, blurTap, 0.72);
         }
 
-        // Trunk -> branches & dense foliage -> neighboring forest depth through natural overcast exposure
-        float canopySpread = smoothstep(0.16, 0.78, safeTreeUv.x);
+        // Trunk -> extending mossy branch & foliage -> neighboring deep forest mist
+        float canopySpread = smoothstep(0.18, 0.76, safeTreeUv.x);
         float structuralMask = mix(uTrunkReveal, uBranchReveal, canopySpread);
         float effExp = clamp(uTreeExposure * (0.36 + 0.64 * structuralMask), 0.0, 1.0);
 
-        // Documentary overcast exposure curve preserving bark crevices, moss microdetail, and natural shadow tones
-        vec3 treeAdapted = pow(max(treeSample, vec3(0.0)), vec3(mix(1.55, 1.0, effExp)));
-        float expGain = smoothstep(0.0, 0.92, effExp) * 1.02;
+        // Documentary exposure curve preserving bark crevices, moss microdetail, and soft canopy sunbeam
+        vec3 treeAdapted = pow(max(treeSample, vec3(0.0)), vec3(mix(1.45, 1.0, effExp)));
+        float expGain = smoothstep(0.0, 0.92, effExp) * 0.98;
 
         // Very gentle peripheral falloff (zero harsh circular spotlight or heavy vignette)
         vec2 darkEdge = (treeScreenUv - vec2(0.48, 0.50)) * vec2(0.68, 0.84);
-        float envFalloff = clamp(1.0 - dot(darkEdge, darkEdge) * 0.08, 0.80, 1.0);
+        float envFalloff = clamp(1.0 - dot(darkEdge, darkEdge) * 0.08, 0.82, 1.0);
 
-        float mistLift = (fbm(safeTreeUv * 2.2 + vec2(uTime * 0.012, 0.0)) - 0.48) * 0.01 * effExp * smoothstep(0.45, 0.9, safeTreeUv.y);
+        float mistLift = (fbm(safeTreeUv * 2.2 + vec2(uTime * 0.012, 0.0)) - 0.48) * 0.008 * effExp * smoothstep(0.45, 0.9, safeTreeUv.y);
 
         vec3 treeColor = (treeAdapted * expGain + max(0.0, mistLift)) * envFalloff * treeVertBounds * treeHorizBounds;
         sceneAColor = max(sceneAColor, treeColor);
       }
     }
 
-    // A2. Dark Forest Water Surface (gradually discovered below as camera follows leaf)
+    // A2. Physical Dark Forest Water Surface (heightfield -> finite-difference normal -> Fresnel & refraction)
     if (uLakeReady > 0.5 && uLakeVisibility > 0.001 && uPortalProgress < 0.995) {
       vec2 lakeScreenUv = screenUv + vec2(uCamPanOffsetX * 0.5, uCamPanNormY * 0.68);
       vec2 lakeUv = coverUv(lakeScreenUv, screenAspect, uTexAspect);
+      float topSeamFeather = mix(0.001, 0.22, smoothstep(0.02, 0.25, uCamPanNormY));
       float lakeVertMask =
         smoothstep(-0.05, 0.0, lakeScreenUv.y) *
-        (1.0 - smoothstep(0.88, 0.994, lakeScreenUv.y)) *
-        smoothstep(0.002, 0.015, lakeUv.y) *
-        (1.0 - smoothstep(0.985, 0.998, lakeUv.y));
+        (1.0 - smoothstep(1.0 - topSeamFeather, 1.005, lakeScreenUv.y)) *
+        smoothstep(0.001, 0.008, lakeUv.y) *
+        (1.0 - smoothstep(0.998, 1.004, lakeUv.y));
       float lakeHorizMask =
-        smoothstep(0.002, 0.015, lakeUv.x) *
-        (1.0 - smoothstep(0.985, 0.998, lakeUv.x));
+        smoothstep(0.001, 0.008, lakeUv.x) *
+        (1.0 - smoothstep(0.992, 1.002, lakeUv.x));
 
       if (lakeVertMask > 0.001 && lakeHorizMask > 0.001) {
-        lakeUv = clamp(lakeUv, 0.008, 0.992);
+        lakeUv = clamp(lakeUv, 0.004, 0.996);
 
-        // Water plane occupies lower & mid dark mirror region
-        float waterZone = smoothstep(0.76, 0.40, lakeScreenUv.y);
-        float skyNightFade = smoothstep(1.02, 0.64, lakeScreenUv.y);
+        float waterMask = computePondWaterMask(lakeUv);
+        float skyNightFade = mix(1.0, smoothstep(1.08, 0.78, lakeScreenUv.y), smoothstep(0.02, 0.25, uCamPanNormY));
 
-        float waveSlope = 0.0;
-        float ringHighlight = 0.0;
-        float impactRippleEnvelope = 0.0;
+        // Compute 2D heightfield & finite-difference surface normal on the water plane
+        float eps = 0.0022;
+        vec2 epsX = vec2(eps / screenAspect, 0.0);
+        vec2 epsY = vec2(0.0, eps);
 
-        // 1. Quiet leaf touchdown meniscus disturbance + concentric ripples expanding outward
-        if (uImpactRippleStrength > 0.005) {
-          vec2 impVec = lakeScreenUv - uImpactOrigin;
-          impVec.x *= screenAspect;
-          impVec.y *= 1.34;
-          float impDist = length(impVec);
-          float distAtten = exp(-impDist * 1.85);
+        vec2 lakeUvX = clamp(coverUv(lakeScreenUv + epsX, screenAspect, uTexAspect), 0.004, 0.996);
+        vec2 lakeUvY = clamp(coverUv(lakeScreenUv + epsY, screenAspect, uTexAspect), 0.004, 0.996);
 
-          // Gentle meniscus wave slope without a bright circular hotspot under the leaf
-          float localMeniscus = exp(-(impDist * impDist) / 0.0018) * sin(impDist * 110.0 - uTime * 2.6) * uContactDip * 0.22;
+        float hC = evalPondHeight(lakeScreenUv, lakeUv, screenAspect, waterMask);
+        float hX = evalPondHeight(lakeScreenUv + epsX, lakeUvX, screenAspect, computePondWaterMask(lakeUvX));
+        float hY = evalPondHeight(lakeScreenUv + epsY, lakeUvY, screenAspect, computePondWaterMask(lakeUvY));
 
-          float front = mix(0.035, 0.86, uImpactRippleProgress);
-          float band1 = impDist - front;
-          float env1 = exp(-(band1 * band1) / 0.0018) * uImpactRippleStrength * distAtten;
-          float band2 = impDist - max(0.0, front - 0.085);
-          float env2 = exp(-(band2 * band2) / 0.0014) * uImpactRippleStrength * 0.58 * distAtten;
-          float band3 = impDist - max(0.0, front - 0.165);
-          float env3 = exp(-(band3 * band3) / 0.0011) * uImpactRippleStrength * 0.30 * distAtten;
+        float slopeScale = 0.54 / eps;
+        vec3 waterNormal = normalize(vec3((hC - hX) * slopeScale, (hC - hY) * slopeScale, 1.0));
 
-          float harmonic =
-            sin(band1 * 88.0) * env1 +
-            sin(band2 * 108.0) * env2 +
-            sin(band3 * 128.0) * env3 +
-            localMeniscus;
-
-          waveSlope += harmonic * 1.65;
-          impactRippleEnvelope = clamp(env1 + env2 * 0.72 + env3 * 0.45, 0.0, 1.0);
-          ringHighlight += (
-            max(0.0, sin(band1 * 88.0)) * env1 * 0.55 +
-            max(0.0, sin(band2 * 108.0)) * env2 * 0.35 +
-            max(0.0, sin(band3 * 128.0)) * env3 * 0.20
-          ) * waterZone;
-        }
-
-        // 2. Subtle water micro-current when stirred
-        if (uWaterMotion > 0.01) {
-          float micro1 = sin(lakeUv.x * 110.0 + uTime * 1.05 + cos(lakeUv.y * 54.0 - uTime * 0.65) * 1.1);
-          float micro2 = sin(lakeUv.y * 145.0 - uTime * 0.85 + sin(lakeUv.x * 68.0 + uTime * 0.5) * 1.0);
-          waveSlope += (micro1 * 0.55 + micro2 * 0.45) * 0.18 * uWaterMotion * waterZone;
-        }
-
-        // 3. Interactive click ripple anywhere on the water
-        if (uRippleActive > 0.5) {
-          vec2 rpVec = lakeUv - uRippleCenter;
-          rpVec.x *= uTexAspect;
-          rpVec.y *= 1.28;
-          float rpDist = length(rpVec);
-          float rpFront = uRippleAge * 0.24;
-          float rpBand = rpDist - rpFront;
-          float rpEnv = exp(-(rpBand * rpBand) / 0.0009) * exp(-uRippleAge * 0.85);
-          float clickWave = sin(rpBand * 165.0) * rpEnv * 1.65;
-          waveSlope += clickWave;
-          ringHighlight += max(0.0, clickWave) * 0.28 * waterZone;
-        }
-
-        // Refract dark lake reflection strongly along concentric wave crests (physical wave distortion)
-        vec2 refractedLakeUv = clamp(
-          lakeUv + vec2(waveSlope * 0.0068, waveSlope * 0.0105) * waterZone,
-          0.004,
-          0.996
-        );
+        // Refract and reflect dark lake image strictly from computed surface normal N.xy
+        vec2 refractShift = waterNormal.xy * vec2(0.044, 0.074) * waterMask;
+        vec2 refractedLakeUv = clamp(lakeUv + refractShift, 0.004, 0.996);
         vec3 lakeSample = texture2D(uTexLake, refractedLakeUv).rgb;
 
-        // Broad diffused overcast sky reflection across water (no localized spotlight behind leaf)
+        // Broad diffused overcast twilight sky field across pond basin
         vec2 dLight = lakeScreenUv - uLightPos;
         dLight.x *= screenAspect * 0.65;
         vec2 rLight = rotate2d(dLight, -0.22);
-        float sigX = max(0.28, uLightRadius * 2.4);
-        float sigY = max(0.18, uLightRadius * 1.6);
+        float sigX = max(0.32, uLightRadius * 2.6);
+        float sigY = max(0.20, uLightRadius * 1.8);
         float beam = exp(-(rLight.x * rLight.x) / (sigX * sigX) - (rLight.y * rLight.y) / (sigY * sigY)) * uLightIntensity;
 
-        vec2 vigVec = (lakeScreenUv - vec2(0.5, 0.46)) * vec2(0.72, 0.88);
-        float lakeVignette = clamp(1.0 - dot(vigVec, vigVec) * 0.18, 0.58, 1.0);
+        vec2 vigVec = (lakeScreenUv - vec2(0.5, 0.48)) * vec2(0.62, 0.78);
+        float lakeVignette = clamp(1.0 - dot(vigVec, vigVec) * 0.12, 0.76, 1.0);
 
-        // Soft ambient shadow cast onto water right before touchdown (never darkens water around already-settled leaf)
-        vec2 shVec = (lakeScreenUv - uLeafShadowPos) * vec2(screenAspect, 1.45);
-        float shadowRadius = mix(0.075, 0.20, uLeafHeightNorm);
-        float shadowStrength = mix(0.45, 0.12, uLeafHeightNorm) * (1.0 - smoothstep(0.45, 0.68, uPortalProgress));
+        // Smooth leaf shadow in approach -> tight meniscus contact occlusion directly beneath floating leaf
+        vec2 shVec = rotate2d(lakeScreenUv - uLeafShadowPos, -uLeafYaw * 0.65);
+        shVec.x *= screenAspect * 0.76;
+        shVec.y *= 1.85;
+        float shadowRadius = mix(0.036, 0.16, uLeafHeightNorm);
+        float shadowStrength = mix(0.42 * uLeafOpacity, 0.14, uLeafHeightNorm) * (1.0 - smoothstep(0.45, 0.78, uPortalProgress));
         float leafShadow = 1.0 - exp(-dot(shVec, shVec) / (shadowRadius * shadowRadius)) * shadowStrength;
 
-        float nightLighting = (0.14 + beam * 0.24) * lakeVignette * skyNightFade * leafShadow;
-        vec3 darkMirror = lakeSample * vec3(0.76, 0.86, 0.86) * nightLighting;
+        // Subtle inverted water reflection of the resting leaf silhouette directly underneath the floating blade
+        vec2 leafReflDelta = rotate2d(lakeScreenUv - (uLeafShadowPos - vec2(0.0, 0.022)) + waterNormal.xy * 0.012, -uLeafYaw * 0.65);
+        leafReflDelta.x *= screenAspect * 0.72;
+        leafReflDelta.y *= 1.95;
+        float leafReflMask = exp(-dot(leafReflDelta, leafReflDelta) / (0.042 * 0.042)) * (1.0 - smoothstep(0.0, 0.14, uLeafHeightNorm)) * uLeafOpacity * waterMask;
 
-        // Phase 3: Forest reflections emerge inside expanding water ripples (water -> ripple -> reflection)
-        vec3 rippleReflection = vec3(0.0);
+        // Preserve natural dark tannin-rich rainforest pool shadows without crushing shore bark & ferns
+        float pondExposure = mix(0.88, 0.72 + beam * 0.26, waterMask) * lakeVignette * skyNightFade * leafShadow;
+        vec3 deepWaterBase = lakeSample * vec3(0.92, 0.96, 0.94) * pondExposure;
+        deepWaterBase = mix(deepWaterBase, deepWaterBase * 0.58 + vec3(0.016, 0.015, 0.008), leafReflMask * 0.55);
+
+        // Schlick Fresnel + reflected ray vertical sky tilt (refraction dominates; Fresnel gives restrained slope contrast without milky rings)
+        vec3 viewDir = normalize(vec3(0.0, -0.36, 0.93));
+        vec3 reflRay = reflect(-viewDir, waterNormal);
+        float ndotv = clamp(dot(waterNormal, viewDir), 0.0, 1.0);
+        float fresnel = 0.02 + 0.98 * pow(1.0 - ndotv, 5.0);
+
+        float slopeSkyTilt = clamp(smoothstep(-0.15, 0.58, reflRay.y), 0.0, 1.0);
+        float slopeMod = length(waterNormal.xy);
+        float lakeLuma = dot(lakeSample, vec3(0.299, 0.587, 0.114));
+        // Subtle contrast proportional to ambient sky/water darkness (never milky chalk rings)
+        float antiMilk = mix(1.0, 0.35, smoothstep(0.08, 0.28, lakeLuma));
+        vec3 waveSkyMod = mix(vec3(-0.012, -0.012, -0.012), vec3(0.032, 0.040, 0.038), slopeSkyTilt) * smoothstep(0.03, 0.30, slopeMod) * antiMilk * waterMask * lakeVignette;
+
+        // Restrained directional sky-gap specular catchlight strictly on steepest wave facets
+        vec3 skyGapDir = normalize(vec3((uLightPos.x - 0.5) * 0.45, 0.62, 0.75));
+        vec3 halfVec = normalize(skyGapDir + viewDir);
+        float waveSlopeCatch = pow(max(0.0, dot(waterNormal, halfVec)), 42.0);
+        vec3 specularGlint = vec3(0.056, 0.068, 0.066) * waveSlopeCatch * smoothstep(0.06, 0.28, slopeMod) * antiMilk * waterMask * (0.20 + beam * 0.28) * lakeVignette;
+
+        // Subtle cool misty overcast reflection lift modulated physically by Fresnel
+        vec3 skyFresnelTint = vec3(0.042, 0.054, 0.052) * fresnel * waterMask * (0.45 + beam * 0.55) * lakeVignette * leafShadow;
+
+        // Stage 2-3: Coherent inverted rainforest reflections emerge inside pond water & distort unifiedly with waterNormal
+        vec3 pondReflection = vec3(0.0);
         if (uForestReady > 0.5 && uReflectionIntensity > 0.005) {
           vec2 reflScreenUv = vec2(lakeScreenUv.x, 1.0 - lakeScreenUv.y * 0.85);
-          vec2 reflUv = coverUv(clamp(reflScreenUv, 0.01, 0.99), screenAspect, uTexAspect);
-          reflUv = clamp(reflUv + vec2(waveSlope * 0.014, waveSlope * 0.020), 0.005, 0.995);
+          vec2 reflUv = coverUv(clamp(reflScreenUv, 0.02, 0.98), screenAspect, uTexAspect);
+          reflUv = clamp(reflUv + waterNormal.xy * vec2(0.064, 0.098), 0.015, 0.985);
           vec3 reflSample = texture2D(uTexForestMid, reflUv).rgb;
-          float reflMask = waterZone * uReflectionIntensity * (0.32 + 0.68 * impactRippleEnvelope + ringHighlight * 0.4);
-          rippleReflection = reflSample * vec3(0.72, 0.82, 0.78) * reflMask * 0.68 * lakeVignette;
+          // Tone-match to damp mossy coastal forest pool so reflection feels physically inside the same valley
+          float reflLuma = dot(reflSample, vec3(0.299, 0.587, 0.114));
+          vec3 valleyRefl = mix(vec3(reflLuma), reflSample, 0.52) * vec3(0.50, 0.60, 0.52);
+          float lakeOpenMask = smoothstep(0.03, 0.22, lakeLuma);
+          float reflFresnel = mix(0.28, 1.0, fresnel);
+          float reflMask = waterMask * uReflectionIntensity * reflFresnel * mix(0.35, 1.0, lakeOpenMask) * leafShadow;
+          pondReflection = valleyRefl * reflMask * 0.54 * lakeVignette;
         }
 
-        // Restrained natural specular shimmer along concentric ripple crests (avoid white painted rings)
-        vec3 crestTint = vec3(0.24, 0.30, 0.29);
-        vec3 crestGlow = crestTint * ringHighlight * (0.08 + beam * 0.10) * lakeVignette;
+        // Stage 3: Reflected forest organizes gently into crisp hydrological interference filaments (zero blurry blobs)
+        vec3 acousticTopoGlow = vec3(0.0);
+        if (uAcousticTopography > 0.003) {
+          float reflLum = dot(pondReflection + lakeSample * 0.35, vec3(0.299, 0.587, 0.114));
+          vec2 waveCenter = lakeScreenUv - uImpactOrigin;
+          waveCenter.x *= screenAspect * 0.72;
+          waveCenter.y *= 1.65;
+          float radialW = length(waveCenter);
 
-        vec3 moonMist = vec3(0.05, 0.07, 0.07) * (0.08 + beam * 0.12) * waterZone * leafShadow;
+          // Razor-fine concentric & cross-shoreline iso-phase filaments locked to physical pond surface height hC
+          float phaseRing = sin(radialW * 34.0 - uTime * 1.15 + hC * 280.0 + reflLum * 2.4);
+          float thinRing = (1.0 - smoothstep(0.0, 0.055, abs(phaseRing))) * exp(-radialW * 1.45);
+          float shoreWavePhase = sin((lakeScreenUv.y * 18.0 + sin(lakeScreenUv.x * 7.5 + uTime * 0.38) * 0.35 + hC * 220.0) * 3.14159265);
+          float thinShoreLine = (1.0 - smoothstep(0.0, 0.052, abs(shoreWavePhase))) * smoothstep(0.04, 0.24, reflLum);
 
-        vec3 lakeColor = (darkMirror + rippleReflection + crestGlow + moonMist) * uLakeVisibility * lakeVertMask * lakeHorizMask;
+          float filamentEnergy = (thinRing * 0.58 + thinShoreLine * 0.52) * smoothstep(0.02, 0.16, slopeMod * 0.45 + reflLum);
+          vec3 topoTint = mix(vec3(0.48, 0.58, 0.44), vec3(0.76, 0.78, 0.70), clamp(uAudioBands.z, 0.0, 1.0));
+          acousticTopoGlow = topoTint * filamentEnergy * waterMask * uAcousticTopography * (0.16 + 0.14 * uAudioBands.w) * lakeVignette;
+        }
+
+        vec3 lakeColor = max(vec3(0.0), deepWaterBase + skyFresnelTint + waveSkyMod + specularGlint + pondReflection + acousticTopoGlow) * uLakeVisibility * lakeVertMask * lakeHorizMask;
         sceneAColor = max(sceneAColor, lakeColor);
       }
     }
 
     // =========================================================================
-    // PHASE 4: RIPPLE-CARRIED CAMERA EMERGENCE (NO FBM BLOB OR GLOWING PORTAL)
+    // STAGE 3->4: REFLECTION-GUIDED HORIZON & TOPOGRAPHIC EMERGENCE (ZERO PORTAL BLOB)
     // =========================================================================
     vec2 pVec = screenUv - uImpactOrigin;
     pVec.x *= screenAspect * 0.72;
     pVec.y *= 1.18;
     float radialDist = length(pVec);
-    float rippleFrontierMod = sin(radialDist * 34.0 - uPortalProgress * 11.0) * 0.032 * (1.0 - uPortalProgress);
-    float frontierDist = radialDist + rippleFrontierMod;
+    float rippleFrontierMod = sin(radialDist * 30.0 - uPortalProgress * 9.5) * 0.026 * (1.0 - uPortalProgress);
+    float organicField = fbm(screenUv * 4.2 + vec2(0.0, uPortalProgress * 0.35));
+    float bridgeElevation = screenUv.y * 0.34 + organicField * 0.26 + radialDist * 0.24 + rippleFrontierMod;
 
-    float threshold = mix(-0.18, 1.18, uPortalProgress);
-    float portalMask = 1.0 - smoothstep(threshold - 0.32, threshold + 0.32, frontierDist);
+    float threshold = mix(-0.32, 1.32, uPortalProgress);
+    float portalMask = 1.0 - smoothstep(threshold - 0.28, threshold + 0.28, bridgeElevation);
     float rim = smoothstep(0.0, 0.5, portalMask) * (1.0 - smoothstep(0.5, 1.0, portalMask));
 
     // =========================================================================
@@ -347,40 +470,71 @@ export const CINEMATIC_FRAGMENT_SHADER = /* glsl */ `
     if (uForestReady > 0.5 && uPortalProgress > 0.005) {
       vec2 glidePivot = vec2(0.5, 0.34);
       vec2 baseB = screenUv - glidePivot;
-      baseB = rotate2d(baseB, uSettleRollRad) / max(0.5, uSettleScale) + glidePivot;
-      vec2 forestUv = coverUv(baseB, screenAspect, uTexAspect);
+      float settleBreath = 1.0 + sin(uTime * 0.24) * 0.0018 * smoothstep(0.85, 1.0, uPortalProgress);
+      baseB = rotate2d(baseB, uSettleRollRad) / max(0.5, uSettleScale * settleBreath) + glidePivot;
+      vec2 forestUv = coverUvForest(baseB, screenAspect, uTexAspect, uForestCropOffset);
 
       vec3 roughMid = texture2D(uTexForestMid, clamp(forestUv, 0.0, 1.0)).rgb;
       float midLuma = dot(roughMid, vec3(0.299, 0.587, 0.114));
       float estimatedDepth = clamp(forestUv.y * 0.52 + smoothstep(0.14, 0.72, midLuma) * 0.48, 0.0, 1.0);
 
       // Shallow water continuity strictly in the dark pool region (leaves shoreline mud, ferns & fallen leaves solid)
-      float poolSpatial = smoothstep(0.34, 0.10, forestUv.y) * smoothstep(0.76, 0.40, forestUv.x);
-      float poolDarkWater = smoothstep(0.22, 0.07, midLuma);
+      float poolSpatial = smoothstep(0.35, 0.08, forestUv.y) * smoothstep(0.76, 0.36, forestUv.x);
+      float poolDarkWater = smoothstep(0.23, 0.06, midLuma);
       float lowerPoolMask = poolSpatial * poolDarkWater;
-      float poolWave = sin(forestUv.x * 84.0 + uTime * 0.9 + forestUv.y * 32.0) * 0.0016 * lowerPoolMask;
-      float frontierPulse = rim * sin(uPortalProgress * 3.14159265);
-      vec2 rippleRefraction = normalize(pVec + vec2(0.0001)) * sin(radialDist * 46.0 - uPortalProgress * 12.0) * frontierPulse * 0.014;
+      float audioPoolAmp = 1.0 + uWaterResonance * (0.45 + 0.85 * uAudioBands.w);
+      float poolWave = (
+        sin(forestUv.x * 84.0 + uTime * 0.85 + forestUv.y * 32.0) * 0.0014 +
+        cos(forestUv.y * 120.0 - uTime * 0.60 + forestUv.x * 26.0) * 0.00055 * (1.0 + uAudioBands.y * 0.65)
+      ) * lowerPoolMask * audioPoolAmp;
+      float mistDriftMask = smoothstep(0.55, 0.92, forestUv.y) * smoothstep(0.35, 0.78, midLuma);
+      vec2 mistBreath = vec2(
+        sin(uTime * 0.42 + forestUv.y * 4.5) * 0.00045,
+        cos(uTime * 0.31 + forestUv.x * 3.8) * 0.00025
+      ) * mistDriftMask;
 
-      vec2 parallaxOffset = uMouse * (1.0 - estimatedDepth) * 0.018;
+      float frontierPulse = rim * sin(uPortalProgress * 3.14159265);
+      vec2 rippleRefraction = normalize(pVec + vec2(0.0001)) * sin(radialDist * 40.0 - uPortalProgress * 10.0) * frontierPulse * 0.012;
+
+      vec2 parallaxOffset = uMouse * (1.0 - estimatedDepth) * 0.016;
       vec2 gentleBreathing = (screenUv - glidePivot) * ((1.0 - uPortalProgress) * 0.024);
-      vec2 finalForestUv = clamp(forestUv - parallaxOffset - gentleBreathing + rippleRefraction + vec2(poolWave, poolWave * 1.4), 0.0, 1.0);
+      vec2 finalForestUv = clamp(
+        forestUv - parallaxOffset - gentleBreathing + rippleRefraction + mistBreath + vec2(poolWave, poolWave * 1.35),
+        0.002,
+        0.998
+      );
 
       vec3 midColor = texture2D(uTexForestMid, finalForestUv).rgb;
-      vec2 farUv = clamp(forestUv - uMouse * 0.005, 0.0, 1.0);
+      vec2 farUv = clamp(forestUv - uMouse * 0.005 + mistBreath * 1.4, 0.002, 0.998);
       vec3 farColor = texture2D(uTexForestFar, farUv).rgb;
 
-      // Subtle depth parallax in distant misty canopy without altering coastal color temperature
+      // Subtle depth parallax in distant misty canopy without altering coastal ecosystem realism
       float canopyGap = smoothstep(0.55, 0.92, midLuma) * smoothstep(0.58, 0.94, forestUv.y);
-      sceneBColor = mix(midColor, farColor, canopyGap * 0.25);
+      vec3 rawForest = mix(midColor, farColor, canopyGap * 0.25);
+
+      // Restrained cinematic exposure & tonal grade:
+      // Deeper, cooler-balanced temperate forest & water continuity for EcoSonic without crushing shadow bark/moss/water detail.
+      vec3 graded = max(rawForest, vec3(0.0));
+      graded = graded / (vec3(1.0) + graded * 0.34);
+      graded *= vec3(0.84, 0.90, 0.89);
+      graded = pow(graded, vec3(1.10)) * 0.85 + vec3(0.007, 0.010, 0.008);
+
+      // Clean undulating dark water pool (no artificial static contour loops behind foreground typography)
+      graded += vec3(0.016, 0.022, 0.018) * max(0.0, poolWave * 180.0) * lowerPoolMask * uWaterResonance;
+
+      // Localized exposure falloff where UI typography & header sit (forest & water stay rich and clearly visible)
+      float bottomTextMask = smoothstep(0.46, 0.0, screenUv.y) * mix(1.0, 0.42, smoothstep(0.16, 0.86, screenUv.x));
+      float topNavMask = smoothstep(0.82, 1.0, screenUv.y);
+      float naturalVignette = 1.0 - bottomTextMask * 0.22 - topNavMask * 0.28;
+      graded *= naturalVignette;
 
       // Depth-ordered environmental reveal as camera rises out of the water reflection
       float depthLag = smoothstep(estimatedDepth * 0.28, 0.55 + estimatedDepth * 0.45, uPortalProgress);
-      sceneBColor *= mix(0.62, 1.0, depthLag);
+      sceneBColor = graded * mix(0.62, 1.0, depthLag);
     }
 
     vec3 composited = mix(sceneAColor, sceneBColor, portalMask);
-    composited *= (1.0 - rim * 0.10 * sin(uPortalProgress * 3.14159265));
+    composited *= (1.0 - rim * 0.08 * sin(uPortalProgress * 3.14159265));
     composited = mix(composited, vec3(0.015, 0.019, 0.016), clamp(uDarknessVeil, 0.0, 1.0));
 
     gl_FragColor = vec4(composited, 1.0);
@@ -492,13 +646,13 @@ export const LEAF_FRAGMENT_SHADER = /* glsl */ `
     float avgNeighbor = (lumL + lumR + lumD + lumU) * 0.25;
     float veinCrevice = clamp((avgNeighbor - lumC) * 6.5, 0.0, 0.22);
 
-    // Exact desaturated cool sage-green matching the surrounding alder leaves in old_growth_opening_4k.jpg
-    vec3 sageMatch = mix(vec3(cleanLum * 1.18), cleanTex * vec3(1.18, 1.08, 1.88), 0.52) * 1.15;
-    vec3 mutedOlive = mix(vec3(cleanLum), cleanTex * vec3(1.10, 0.96, 0.72), 0.48) * 0.92;
+    // Exact natural mossy-branch sunlit green matching the surrounding wet foliage on mossy_branch_opening
+    vec3 branchGreen = mix(vec3(cleanLum * 0.90), cleanTex * vec3(0.92, 1.04, 0.44), 0.72) * 0.92;
+    vec3 mutedOlive = mix(vec3(cleanLum), cleanTex * vec3(1.06, 0.96, 0.64), 0.52) * 0.88;
     vec3 ochreLeaf = vec3(cleanLum * 0.88, cleanLum * 0.66, cleanLum * 0.34);
     vec3 brownLeaf = vec3(cleanLum * 0.60, cleanLum * 0.38, cleanLum * 0.20);
 
-    vec3 agedAlbedo = mix(sageMatch, mutedOlive, smoothstep(0.0, 0.36, age));
+    vec3 agedAlbedo = mix(branchGreen, mutedOlive, smoothstep(0.0, 0.36, age));
     agedAlbedo = mix(agedAlbedo, ochreLeaf, smoothstep(0.32, 0.72, age));
     agedAlbedo = mix(agedAlbedo, brownLeaf, smoothstep(0.68, 1.0, age));
     agedAlbedo *= (1.0 - veinCrevice * (0.36 - uLeafSoftness * 0.16));
@@ -521,11 +675,12 @@ export const LEAF_FRAGMENT_SHADER = /* glsl */ `
     float baseAmb = mix(1.0, 0.55 + 0.45 * uLightIntensity, fallMotion);
     float envLight = baseAmb * directional * uCanopyPatchLight * canopyReveal;
 
-    // Subtle cool sky sheen near dark water surface
+    // Subtle warm backlit translucency on the sunlit branch + cool sky sheen near dark water surface
     float waterBounce = (1.0 - smoothstep(0.0, 0.25, uHeightNorm)) * 0.06;
-    vec3 reflectedSheen = vec3(0.30, 0.34, 0.33) * (spec + waterBounce * waxyMicro * 0.20) * canopyReveal;
+    vec3 sunTranslucency = vec3(0.24, 0.32, 0.04) * uSubsurface * (0.45 + 0.55 * waxyMicro) * canopyReveal;
+    vec3 reflectedSheen = vec3(0.30, 0.34, 0.32) * (spec + waterBounce * waxyMicro * 0.20) * canopyReveal;
 
-    vec3 finalColor = agedAlbedo * envLight + reflectedSheen;
+    vec3 finalColor = agedAlbedo * envLight + sunTranslucency + reflectedSheen;
 
     gl_FragColor = vec4(finalColor, alpha);
     #include <tonemapping_fragment>

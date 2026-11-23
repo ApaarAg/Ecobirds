@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { LightState } from '../../lib/cinematicTimeline';
 
-const LEAF_WATER_IMG = '/src/assets/images/leaf_dark_water_1795329475477.jpg';
+const LEAF_WATER_IMG = '/src/assets/images/rainforest_dark_pool_doc_1795425510941.jpg';
 
 interface RipplePacket {
   x: number;

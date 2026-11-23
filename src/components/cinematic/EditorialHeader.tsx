@@ -70,18 +70,18 @@ export function EditorialHeader({
           : 'opacity-0 -translate-y-3 invisible pointer-events-none'
       }`}
     >
-      {/* Smoothly crossfaded top canopy scrim over the living forest hero */}
+      {/* Restrained top canopy scrim over the living forest hero */}
       <div
         aria-hidden="true"
-        className={`pointer-events-none absolute inset-0 bg-gradient-to-b from-[#060A07]/78 via-[#060A07]/34 to-transparent transition-opacity duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+        className={`pointer-events-none absolute inset-0 bg-gradient-to-b from-[#060A07]/66 via-[#060A07]/22 to-transparent transition-opacity duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           isHeroForest ? 'opacity-100' : 'opacity-0'
         }`}
       />
-      <div className="relative z-10 max-w-[1320px] mx-auto px-5 sm:px-10 h-16 flex items-center justify-between gap-8">
+      <div className="relative z-10 max-w-[1320px] mx-auto px-4 sm:px-6 lg:px-10 h-16 flex items-center justify-between gap-3 lg:gap-8">
         {/* Zone 1: Single-element Editorial Brand Wordmark */}
         <Link
           to="/"
-          className={`font-serif text-xl sm:text-2xl font-medium tracking-tight whitespace-nowrap shrink-0 transition-[opacity,transform] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+          className={`font-serif text-lg sm:text-xl lg:text-2xl font-medium tracking-tight whitespace-nowrap shrink-0 transition-[opacity,transform] duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${
             visible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1.5'
           }`}
         >
@@ -91,7 +91,7 @@ export function EditorialHeader({
         {/* Zone 2: Choreographed single-line nav links with origin-left hairline underlines */}
         <nav
           aria-label="Primary navigation"
-          className="hidden md:flex items-center gap-7 text-[13px] font-medium tracking-[0.01em]"
+          className="hidden md:flex items-center gap-3.5 lg:gap-7 text-xs lg:text-[13px] font-medium tracking-[0.01em]"
         >
           {NAV_ITEMS.map((item) => {
             const isActive = activeSection === item.id;
@@ -117,7 +117,7 @@ export function EditorialHeader({
         >
           <Link
             to="/app/observatory"
-            className={`hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-sm text-xs font-medium tracking-[0.04em] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] whitespace-nowrap shrink-0 min-h-[40px] group ${ctaClass}`}
+            className={`hidden sm:inline-flex items-center gap-1.5 lg:gap-2 px-3 lg:px-4 py-2 rounded-sm text-[11px] lg:text-xs font-medium tracking-[0.03em] lg:tracking-[0.04em] transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] whitespace-nowrap shrink-0 min-h-[40px] group ${ctaClass}`}
           >
             <span>Explore the Observatory</span>
             <ArrowRight className="w-3.5 h-3.5 transition-transform duration-300 group-hover:translate-x-0.5" />

@@ -1,11 +1,18 @@
 import { Link } from 'react-router-dom';
 import { ArrowRight, Volume2, VolumeX } from 'lucide-react';
-import type { AcousticStructureState, TypographyState } from '../../lib/cinematicTimeline';
+import type {
+  AcousticStructureState,
+  CinematicTimelineState,
+  TypographyState,
+} from '../../lib/cinematicTimeline';
 import { AcousticEmergenceLayer } from './AcousticEmergenceLayer';
 
 interface CinematicTypographyProps {
   typography: TypographyState;
   acoustic: AcousticStructureState;
+  timelineRef: React.MutableRefObject<CinematicTimelineState>;
+  isInViewport: boolean;
+  reducedMotion: boolean;
   soundPlaying: boolean;
   soundMuted: boolean;
   onToggleSound: () => void;
@@ -14,12 +21,15 @@ interface CinematicTypographyProps {
 /**
  * Restrained editorial identity integrated into the natural scene:
  * - Silent throughout opening, water contact, ripple, reflection, and forest reveal
- * - Acoustic emergence (90.5% -> 95.5%): sound waveforms & frequency strata form over shoreline
- * - Identity arrival (95.5% -> 100%): ECOSONIC -> Listen deeper. -> quiet description & CTA
+ * - Acoustic emergence (86.5% -> 96.2%): sound waveforms & frequency strata form along shoreline
+ * - Identity arrival (94.2% -> 100%): ECOSONIC -> Listen deeper. -> quiet description & CTA
  */
 export function CinematicTypography({
   typography,
   acoustic,
+  timelineRef,
+  isInViewport,
+  reducedMotion,
   soundPlaying,
   soundMuted,
   onToggleSound,
@@ -28,7 +38,12 @@ export function CinematicTypography({
 
   return (
     <>
-      <AcousticEmergenceLayer acoustic={acoustic} />
+      <AcousticEmergenceLayer
+        acoustic={acoustic}
+        timelineRef={timelineRef}
+        isInViewport={isInViewport}
+        reducedMotion={reducedMotion}
+      />
 
       {/* Initial whisper-quiet wordmark during dark opening stillness (strictly 0) */}
       {typography.quietMarkOpacity > 0.01 && (
@@ -45,10 +60,10 @@ export function CinematicTypography({
       {/* Staggered editorial identity after forest and acoustic structure have emerged */}
       {typography.brandOpacity > 0.01 && (
         <div className="pointer-events-none absolute inset-0 z-30 flex items-end">
-          {/* Natural ground shadow scrim only behind lower-left text (zero glass cards or boxes) */}
+          {/* Subtle localized exposure scrim behind lower typography so water reflections & forest stay visible */}
           <div
             aria-hidden="true"
-            className="absolute inset-x-0 bottom-0 h-[58%] bg-gradient-to-t from-[#060907]/88 via-[#070C09]/38 to-transparent"
+            className="absolute inset-x-0 bottom-0 h-[44%] bg-gradient-to-t from-[#060907]/62 via-[#070C09]/22 to-transparent"
             style={{ opacity: typography.brandOpacity }}
           />
 

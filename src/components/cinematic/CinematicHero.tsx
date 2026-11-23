@@ -40,6 +40,8 @@ function typographyDiffers(a: TypographyState, b: TypographyState): boolean {
 
 function acousticDiffers(a: AcousticStructureState, b: AcousticStructureState): boolean {
   return (
+    Math.abs(a.waterResonance - b.waterResonance) > 0.02 ||
+    Math.abs(a.topographyStrength - b.topographyStrength) > 0.02 ||
     Math.abs(a.waveOpacity - b.waveOpacity) > 0.015 ||
     Math.abs(a.contourProgress - b.contourProgress) > 0.015 ||
     Math.abs(a.spectrumIntensity - b.spectrumIntensity) > 0.015
@@ -110,6 +112,10 @@ export function CinematicHero({ onNavbarVisibilityChange }: CinematicHeroProps) 
       mq.removeEventListener('change', onMotion);
     };
   }, []);
+
+  useEffect(() => {
+    ScrollTrigger.refresh();
+  }, [isMobile]);
 
   // Pause GPU/audio work when visitor scrolls below the cinematic opening
   useEffect(() => {
@@ -336,6 +342,9 @@ export function CinematicHero({ onNavbarVisibilityChange }: CinematicHeroProps) 
         <CinematicTypography
           typography={typography}
           acoustic={acoustic}
+          timelineRef={timelineRef}
+          isInViewport={isInViewport}
+          reducedMotion={reducedMotion}
           soundPlaying={mixerState.isPlaying}
           soundMuted={mixerState.isMuted}
           onToggleSound={handleToggleSound}

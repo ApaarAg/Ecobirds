@@ -1,34 +1,42 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
   CAMERA_PAN_WORLD_SPAN,
+  computeForestResponsiveCropOffset,
   LEAF_STEM_LOCAL_OFFSET,
+  TREE_MOBILE_CROP_SHIFT_X,
   TREE_TWIG_TEX_UV,
   type CinematicTimelineState,
 } from '../../lib/cinematicTimeline';
 import {
   CINEMATIC_FRAGMENT_SHADER,
   CINEMATIC_VERTEX_SHADER,
-  LEAF_FRAGMENT_SHADER,
-  LEAF_VERTEX_SHADER,
   MOTES_FRAGMENT_SHADER,
   MOTES_VERTEX_SHADER,
 } from './cinematicShaders';
+import {
+  createAcousticSpectrumSample,
+  soundscapeController,
+} from '../../audio/soundscapeEngine';
+import { createPhysicalLeafBundle } from './leafMesh';
 
-const TREE_TEX_URL = '/src/assets/images/old_growth_opening_4k.jpg';
-const LAKE_DARK_TEX_URL = '/src/assets/images/still_forest_water_1795328638142.jpg';
+const TREE_TEX_URL = '/src/assets/images/mossy_branch_opening.jpg';
+const LAKE_DARK_TEX_URL = '/src/assets/images/rainforest_dark_pool_doc_1795425510941.jpg';
 const LEAF_TEX_URL = '/src/assets/images/green_forest_leaf_1795360418647.jpg';
-const FOREST_MID_TEX_URL = '/src/assets/images/coastal_waterside_forest_4k.jpg';
-const FOREST_FAR_TEX_URL = '/src/assets/images/coastal_waterside_forest_4k.jpg';
+const FOREST_MASTER_TEX_URL = '/src/assets/images/coastal_waterside_forest_4k.jpg';
+const FOREST_WEB_TEX_URL = '/src/assets/images/coastal_waterside_forest_web.jpg';
+const TREE_TEX_ASPECT = 1672 / 941;
 const ENV_TEX_ASPECT = 3840 / 2143;
 
-// Pre-allocated math helpers (zero GC inside render loop)
+// Pre-allocated math & audio telemetry helpers (zero GC inside render loop)
 const _raycaster = new THREE.Raycaster();
 const _ndc = new THREE.Vector2();
 const _ndc3 = new THREE.Vector3();
 const _projVec = new THREE.Vector3();
 const _stemOffset = new THREE.Vector3();
 const _leafEuler = new THREE.Euler();
+const _audioSpectrum = createAcousticSpectrumSample();
 
 function detectSoftwareWebGL(): boolean {
   try {
@@ -57,7 +65,7 @@ function unprojectTwigToZ0(
   let cx = TREE_TWIG_TEX_UV.u - 0.5;
   const cy = TREE_TWIG_TEX_UV.v - 0.5;
   if (screenAspect < 1.0) {
-    cx -= 0.17;
+    cx -= TREE_MOBILE_CROP_SHIFT_X;
   }
 
   let treeScreenU: number;
@@ -139,6 +147,7 @@ export function WebGLCinematicStage({
         antialias: !isSoftwareGl,
         powerPreference: 'high-performance',
         alpha: false,
+        preserveDrawingBuffer: isSoftwareGl,
       });
     } catch {
       onWebGLUnavailable();
@@ -166,6 +175,26 @@ export function WebGLCinematicStage({
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x000000);
 
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnv = new RoomEnvironment();
+    const envRenderTarget = pmremGenerator.fromScene(roomEnv, 0.04);
+    roomEnv.dispose();
+    pmremGenerator.dispose();
+    scene.environment = envRenderTarget.texture;
+    scene.environmentIntensity = 0.24;
+
+    // Forest canopy lighting rig (only affects PBR leafMesh; stageMesh ShaderMaterial stays 100% unchanged)
+    const sunKeyLight = new THREE.DirectionalLight(0xffebbc, 2.35);
+    sunKeyLight.position.set(1.6, 2.2, 1.1);
+    scene.add(sunKeyLight);
+
+    const forestHemiLight = new THREE.HemisphereLight(0x6b8984, 0x0d140d, 0.38);
+    scene.add(forestHemiLight);
+
+    const canopyBackLight = new THREE.DirectionalLight(0xb8d482, 0.45);
+    canopyBackLight.position.set(-0.6, 0.7, -1.6);
+    scene.add(canopyBackLight);
+
     const camera = new THREE.PerspectiveCamera(48, width / Math.max(1, height), 0.1, 30);
     camera.position.set(0, 0, 2.5);
 
@@ -182,6 +211,9 @@ export function WebGLCinematicStage({
       tex.needsUpdate = true;
     };
 
+    const initialAspect = width / Math.max(1, height);
+    const initialCrop = computeForestResponsiveCropOffset(initialAspect, ENV_TEX_ASPECT);
+
     const uniforms = {
       uTexTree: { value: null as THREE.Texture | null },
       uTexLake: { value: null as THREE.Texture | null },
@@ -191,7 +223,10 @@ export function WebGLCinematicStage({
       uLakeReady: { value: 0 },
       uForestReady: { value: 0 },
       uResolution: { value: new THREE.Vector2(width, height) },
+      uTreeTexAspect: { value: TREE_TEX_ASPECT },
+      uTreeCropShiftX: { value: TREE_MOBILE_CROP_SHIFT_X },
       uTexAspect: { value: ENV_TEX_ASPECT },
+      uForestCropOffset: { value: new THREE.Vector2(initialCrop.xShift, initialCrop.yShift) },
       uTime: { value: 0 },
       uMouse: { value: new THREE.Vector2(0, 0) },
       uTreeExposure: { value: 0 },
@@ -209,6 +244,8 @@ export function WebGLCinematicStage({
       uWaterMotion: { value: 0 },
       uLeafShadowPos: { value: new THREE.Vector2(0.5, 0.45) },
       uLeafHeightNorm: { value: 1 },
+      uLeafYaw: { value: 0.22 },
+      uLeafOpacity: { value: 0 },
       uImpactOrigin: { value: new THREE.Vector2(0.5, 0.45) },
       uImpactRippleProgress: { value: 0 },
       uImpactRippleStrength: { value: 0 },
@@ -221,23 +258,12 @@ export function WebGLCinematicStage({
       uSettleRollRad: { value: 0 },
       uHazeOpacity: { value: 0 },
       uDarknessVeil: { value: 0 },
+      uWaterResonance: { value: 0 },
+      uAcousticTopography: { value: 0 },
+      uAudioBands: { value: new THREE.Vector4(0.18, 0.24, 0.14, 0.2) },
     };
 
-    const leafUniforms = {
-      uTexLeaf: { value: null as THREE.Texture | null },
-      uLeafReady: { value: 0 },
-      uTime: { value: 0 },
-      uFallFlutter: { value: 0.14 },
-      uOpacity: { value: 0 },
-      uTreeExposure: { value: 0 },
-      uLightIntensity: { value: 0.58 },
-      uHeightNorm: { value: 1 },
-      uColorAging: { value: 0 },
-      uSubsurface: { value: 0.18 },
-      uContactDip: { value: 0 },
-      uLeafSoftness: { value: 0.52 },
-      uCanopyPatchLight: { value: 1.0 },
-    };
+    const forestTexUrl = width < 1024 ? FOREST_WEB_TEX_URL : FOREST_MASTER_TEX_URL;
 
     const treeTex = loader.load(TREE_TEX_URL, (tex) => {
       configureTex(tex);
@@ -249,24 +275,18 @@ export function WebGLCinematicStage({
       uniforms.uLakeReady.value = 1;
       wakeRenderRef.current?.();
     });
-    const leafTex = loader.load(LEAF_TEX_URL, (tex) => {
-      configureTex(tex);
-      leafUniforms.uLeafReady.value = 1;
-      wakeRenderRef.current?.();
-    });
-    const forestMidTex = loader.load(FOREST_MID_TEX_URL, (tex) => {
+    const forestMidTex = loader.load(forestTexUrl, (tex) => {
       configureTex(tex);
       uniforms.uForestReady.value = 1;
       wakeRenderRef.current?.();
     });
-    const forestFarTex = loader.load(FOREST_FAR_TEX_URL, (tex) => {
+    const forestFarTex = loader.load(FOREST_WEB_TEX_URL, (tex) => {
       configureTex(tex);
       wakeRenderRef.current?.();
     });
 
     uniforms.uTexTree.value = treeTex;
     uniforms.uTexLake.value = lakeTex;
-    leafUniforms.uTexLeaf.value = leafTex;
     uniforms.uTexForestMid.value = forestMidTex;
     uniforms.uTexForestFar.value = forestFarTex;
 
@@ -282,18 +302,11 @@ export function WebGLCinematicStage({
     stageMesh.renderOrder = 0;
     scene.add(stageMesh);
 
-    const leafMaterial = new THREE.ShaderMaterial({
-      uniforms: leafUniforms,
-      vertexShader: LEAF_VERTEX_SHADER,
-      fragmentShader: LEAF_FRAGMENT_SHADER,
-      transparent: true,
-      depthWrite: false,
-      side: THREE.DoubleSide,
+    const leafBundle = createPhysicalLeafBundle(maxAniso, LEAF_TEX_URL, () => {
+      wakeRenderRef.current?.();
     });
-
-    const leafGeometry = new THREE.PlaneGeometry(1.48, 0.84, 32, 18);
-    const leafMesh = new THREE.Mesh(leafGeometry, leafMaterial);
-    leafMesh.renderOrder = 2;
+    const leafMesh = leafBundle.mesh;
+    const leafUniforms = leafBundle.uniforms;
     scene.add(leafMesh);
 
     const syncStageDimensions = (w: number, h: number) => {
@@ -396,8 +409,11 @@ export function WebGLCinematicStage({
       renderer.setPixelRatio(nextDpr);
       renderer.setSize(w, h);
       uniforms.uResolution.value.set(w, h);
+      const nextCrop = computeForestResponsiveCropOffset(w / Math.max(1, h), ENV_TEX_ASPECT);
+      uniforms.uForestCropOffset.value.set(nextCrop.xShift, nextCrop.yShift);
       motesUniforms.uPixelRatio.value = nextDpr;
       syncStageDimensions(w, h);
+      renderer.render(scene, camera);
       wakeRenderRef.current?.();
     };
     window.addEventListener('resize', handleResize);
@@ -464,7 +480,7 @@ export function WebGLCinematicStage({
       unprojectTwigToZ0(
         camera,
         camera.aspect,
-        ENV_TEX_ASPECT,
+        TREE_TEX_ASPECT,
         tl.camera.panNormY,
         tl.camera.panOffsetX,
         twigWorld
@@ -480,36 +496,44 @@ export function WebGLCinematicStage({
           : (Math.sin(elapsedTime * 1.35) * 0.7 + Math.sin(elapsedTime * 2.85 + 0.6) * 0.3) *
             gustAmp *
             tl.leaf.attachBlend;
-      const leafRoll = tl.leaf.rollRad + breezeSway;
+      // Subtle wave-coupled floating heave & micro-rocking (zero before touchdown p=0.614, suppressed under reducedMotion)
+      const rockAmp = reducedMotionRef.current ? 0 : tl.leaf.waveRockStrength;
+      const waveHeave = rockAmp * Math.sin(elapsedTime * 1.45) * 0.0018;
+      const wavePitchRock = rockAmp * Math.sin(elapsedTime * 1.15 + 0.4) * 0.015;
+      const waveRollRock = rockAmp * Math.cos(elapsedTime * 1.32 + 0.9) * 0.018;
 
-      _leafEuler.set(tl.leaf.pitchRad, tl.leaf.yawRad, leafRoll);
+      const leafRoll = tl.leaf.rollRad + breezeSway + waveRollRock;
+      const leafPitch = tl.leaf.pitchRad + wavePitchRock;
+
+      _leafEuler.set(leafPitch, tl.leaf.yawRad, leafRoll);
       _stemOffset
         .set(
           LEAF_STEM_LOCAL_OFFSET.x * effectiveScale,
           LEAF_STEM_LOCAL_OFFSET.y * effectiveScale,
-          0
+          LEAF_STEM_LOCAL_OFFSET.z * effectiveScale
         )
         .applyEuler(_leafEuler);
 
-      // Blend seamlessly from exact stem-anchored twig position -> aerodynamic air path -> lake surface (0, -0.22)
+      // Blend seamlessly from exact stem-anchored twig position -> aerodynamic air path -> water touchdown (0, -0.22) -> gentle pond drift
       const attachedCenterX = twigWorld.x - _stemOffset.x;
       const attachedCenterY = twigWorld.y - _stemOffset.y;
 
       const leafTargetX =
         THREE.MathUtils.lerp(attachedCenterX, 0, tl.leaf.xBlendToCenter) +
-        tl.leaf.airSwayX * mobileFit;
+        tl.leaf.airSwayX * mobileFit +
+        tl.leaf.floatDriftX * mobileFit;
       const leafTargetY =
         THREE.MathUtils.lerp(attachedCenterY, -0.22, tl.leaf.fallT) -
-        tl.leaf.contactDip * 0.012;
-      const buoyantBob =
-        reducedMotionRef.current || tl.leaf.heightNorm > 0.05
-          ? 0
-          : Math.sin(elapsedTime * 1.35) * 0.005;
+        tl.leaf.contactDip * 0.011 -
+        tl.leaf.waterlineDepth * 0.004 +
+        tl.leaf.floatDriftY +
+        waveHeave;
+      const leafTargetZ = tl.leaf.z + tl.leaf.floatDriftZ;
 
       leafMesh.visible = tl.leaf.opacity > 0.01;
-      leafMesh.position.set(leafTargetX, leafTargetY + buoyantBob, tl.leaf.z);
+      leafMesh.position.set(leafTargetX, leafTargetY, leafTargetZ);
       leafMesh.rotation.copy(_leafEuler);
-      leafMesh.scale.set(effectiveScale, effectiveScale, 1);
+      leafMesh.scale.setScalar(effectiveScale);
 
       // Subtle dappled forest canopy light variation as leaf drifts across understory openings
       const patchLight =
@@ -517,6 +541,10 @@ export function WebGLCinematicStage({
           ? 0.92
           : 0.9 +
             0.14 * Math.sin(tl.leaf.fallT * 9.5 + leafTargetX * 3.2) * Math.sin(tl.leaf.heightNorm * Math.PI);
+
+      const canopyLightWeight = THREE.MathUtils.smoothstep(tl.leaf.heightNorm, 0.18, 0.85);
+      sunKeyLight.intensity = THREE.MathUtils.lerp(0.68, 2.35, canopyLightWeight);
+      canopyBackLight.intensity = THREE.MathUtils.lerp(0.14, 0.48, canopyLightWeight);
 
       leafUniforms.uTime.value = elapsedTime;
       leafUniforms.uFallFlutter.value = reducedMotionRef.current ? 0 : tl.leaf.flutterAmount;
@@ -530,8 +558,8 @@ export function WebGLCinematicStage({
       leafUniforms.uLeafSoftness.value = tl.leaf.focusSoftness;
       leafUniforms.uCanopyPatchLight.value = patchLight;
 
-      // Project leaf lake shadow & touchdown impact origin into screen UV space
-      _projVec.set(leafTargetX, -0.22, 0.02).project(camera);
+      // Project floating leaf contact shadow / AO at actual leaf position vs fixed water contact point for ripple origin
+      _projVec.set(leafTargetX, -0.22 + tl.leaf.floatDriftY, leafTargetZ).project(camera);
       uniforms.uLeafShadowPos.value.set(
         THREE.MathUtils.clamp(_projVec.x * 0.5 + 0.5, 0.15, 0.85),
         THREE.MathUtils.clamp(_projVec.y * 0.5 + 0.5, 0.15, 0.85)
@@ -566,6 +594,8 @@ export function WebGLCinematicStage({
       uniforms.uLightRadius.value = tl.light.radiusNorm;
       uniforms.uWaterMotion.value = tl.light.waterMotion;
       uniforms.uLeafHeightNorm.value = tl.leaf.heightNorm;
+      uniforms.uLeafYaw.value = tl.leaf.yawRad;
+      uniforms.uLeafOpacity.value = tl.leaf.opacity;
       uniforms.uImpactRippleProgress.value = tl.leaf.impactRippleProgress;
       uniforms.uImpactRippleStrength.value = tl.leaf.impactRippleStrength;
       uniforms.uContactDip.value = tl.leaf.contactDip;
@@ -583,6 +613,17 @@ export function WebGLCinematicStage({
       uniforms.uSettleRollRad.value = THREE.MathUtils.degToRad(tl.world.counterRollDeg);
       uniforms.uHazeOpacity.value = tl.world.hazeOpacity;
       uniforms.uDarknessVeil.value = tl.camera.darknessVeilOpacity;
+
+      // Sample real Web Audio AnalyserNode FFT spectrum (or calm deterministic ecological baseline when muted)
+      soundscapeController.sampleAcousticSpectrum(elapsedTime, tl.audioMix, _audioSpectrum);
+      uniforms.uWaterResonance.value = tl.acoustic.waterResonance;
+      uniforms.uAcousticTopography.value = tl.acoustic.topographyStrength;
+      uniforms.uAudioBands.value.set(
+        _audioSpectrum.lowBand,
+        _audioSpectrum.midBand,
+        _audioSpectrum.highBand,
+        _audioSpectrum.amplitude
+      );
 
       motesUniforms.uTime.value = elapsedTime;
       motesUniforms.uOpacity.value = 0;
@@ -618,13 +659,12 @@ export function WebGLCinematicStage({
 
       stageGeometry.dispose();
       stageMaterial.dispose();
-      leafGeometry.dispose();
-      leafMaterial.dispose();
+      leafBundle.dispose();
       motesGeometry.dispose();
       motesMaterial.dispose();
+      envRenderTarget.dispose();
       treeTex.dispose();
       lakeTex.dispose();
-      leafTex.dispose();
       forestMidTex.dispose();
       forestFarTex.dispose();
       renderer.dispose();

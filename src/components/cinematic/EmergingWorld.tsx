@@ -1,4 +1,4 @@
-const MID_FOREST_IMG = '/src/assets/images/coastal_waterside_forest_4k.jpg';
+const HERO_FOREST_IMG = '/src/assets/images/coastal_waterside_forest_web.jpg';
 
 export interface FallbackWorldState {
   visibility: number;
@@ -60,11 +60,11 @@ export function EmergingWorld({
         }}
       >
         <img
-          src={MID_FOREST_IMG}
-          alt="Overcast temperate coastal old-growth forest waterside with mossy shoreline, ferns, and dark mirror pool"
-          loading="lazy"
+          src={HERO_FOREST_IMG}
+          alt="Temperate wet old-growth rainforest stream with mossy boulders, nurse log, sword ferns, and misty conifers"
+          loading="eager"
           decoding="async"
-          className="w-full h-full object-cover object-center"
+          className="w-full h-full object-cover object-[39%_center] md:object-center brightness-[0.88] contrast-[1.03] saturate-[0.94]"
         />
       </div>
     </div>

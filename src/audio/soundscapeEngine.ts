@@ -62,16 +62,99 @@ export interface SoundscapeMixerSnapshot {
 
 type Listener = (snapshot: SoundscapeMixerSnapshot) => void;
 
+export interface AcousticSpectrumSample {
+  hasLiveAudio: boolean;
+  amplitude: number;
+  lowBand: number;
+  midBand: number;
+  highBand: number;
+  peakFreqNorm: number;
+  bands: Float32Array;
+}
+
+export const ACOUSTIC_SPECTRUM_BAND_COUNT = 16;
+
+export function createAcousticSpectrumSample(): AcousticSpectrumSample {
+  return {
+    hasLiveAudio: false,
+    amplitude: 0,
+    lowBand: 0,
+    midBand: 0,
+    highBand: 0,
+    peakFreqNorm: 0.35,
+    bands: new Float32Array(ACOUSTIC_SPECTRUM_BAND_COUNT),
+  };
+}
+
+/**
+ * Calm, deterministic bioacoustic spectrum curve derived from current habitat audio mix
+ * when user has not yet unmuted live Web Audio playback. Zero allocations when writing into `out`.
+ */
+export function computeAmbientEcologicalSpectrum(
+  elapsedSec: number,
+  mix: Partial<Record<SoundLayerId, number>>,
+  out: AcousticSpectrumSample
+): AcousticSpectrumSample {
+  const water = Math.min(1, Math.max(0, mix.water ?? 0.55));
+  const wind = Math.min(1, Math.max(0, mix.wind ?? 0.45));
+  const birds = Math.min(1, Math.max(0, mix.birds ?? 0.25));
+  const insects = Math.min(1, Math.max(0, mix.insects ?? 0.15));
+
+  const t = Number.isFinite(elapsedSec) ? elapsedSec : 0;
+  const low = Math.min(
+    1,
+    Math.max(0.05, wind * (0.34 + 0.14 * Math.sin(t * 0.52)) + water * 0.18)
+  );
+  const mid = Math.min(
+    1,
+    Math.max(0.06, water * (0.42 + 0.12 * Math.sin(t * 0.94 + 0.7)) + wind * 0.14)
+  );
+  const high = Math.min(
+    1,
+    Math.max(
+      0.04,
+      birds * (0.32 + 0.18 * Math.max(0, Math.sin(t * 1.45 + 0.3))) +
+        insects * (0.24 + 0.1 * Math.sin(t * 2.3))
+    )
+  );
+
+  let sum = 0;
+  let weightedIdx = 0;
+  for (let i = 0; i < ACOUSTIC_SPECTRUM_BAND_COUNT; i++) {
+    const norm = i / (ACOUSTIC_SPECTRUM_BAND_COUNT - 1);
+    const lowW = Math.exp(-Math.pow(norm / 0.28, 2)) * low;
+    const midW = Math.exp(-Math.pow((norm - 0.44) / 0.26, 2)) * mid;
+    const highW = Math.exp(-Math.pow((norm - 0.78) / 0.22, 2)) * high;
+    const ripple =
+      0.78 +
+      0.22 * Math.sin(t * (1.1 + norm * 1.7) + i * 0.85) * Math.cos(t * 0.65 - i * 0.4);
+    const v = Math.min(1, Math.max(0, (lowW + midW + highW) * ripple));
+    out.bands[i] = v;
+    sum += v;
+    weightedIdx += v * norm;
+  }
+
+  out.hasLiveAudio = false;
+  out.lowBand = low;
+  out.midBand = mid;
+  out.highBand = high;
+  out.amplitude = Math.min(1, Math.max(0, (low * 0.32 + mid * 0.42 + high * 0.26) * 1.05));
+  out.peakFreqNorm = sum > 0.001 ? weightedIdx / sum : 0.42;
+  return out;
+}
+
 /**
  * Centralized Web Audio API soundscape controller.
  * - Starts muted and never autoplays on page load.
  * - Creates/resumes AudioContext only upon explicit user interaction.
- * - Uses smooth exponential/linear gain ramps to avoid sudden clicks or cuts.
+ * - Exposes zero-allocation AnalyserNode FFT spectrum data for visual shaders & canvas contours.
  * - Cleans up all oscillators, buffers, timers, and AudioContext on dispose().
  */
 class SoundscapeAudioController {
   private ctx: AudioContext | null = null;
   private masterGain: GainNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private freqBins: Uint8Array<ArrayBuffer> | null = null;
   private layerGains: Partial<Record<SoundLayerId, GainNode>> = {};
   private timers: number[] = [];
   private sourceNodes: AudioNode[] = [];
@@ -128,7 +211,14 @@ class SoundscapeAudioController {
       this.ctx = new AudioCtx();
       this.masterGain = this.ctx.createGain();
       this.masterGain.gain.setValueAtTime(0.0001, this.ctx.currentTime);
-      this.masterGain.connect(this.ctx.destination);
+
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 256;
+      this.analyser.smoothingTimeConstant = 0.84;
+      this.freqBins = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
+
+      this.masterGain.connect(this.analyser);
+      this.analyser.connect(this.ctx.destination);
 
       const ids: SoundLayerId[] = ['birds', 'wind', 'water', 'insects'];
       for (const id of ids) {
@@ -409,6 +499,69 @@ class SoundscapeAudioController {
     });
   }
 
+  /**
+   * Samples live Web Audio AnalyserNode FFT spectrum data when active, or blends cleanly into
+   * deterministic ambient ecological harmonics when muted. Zero heap allocations per frame.
+   */
+  public sampleAcousticSpectrum(
+    elapsedSec: number,
+    mix: Partial<Record<SoundLayerId, number>>,
+    out: AcousticSpectrumSample
+  ): AcousticSpectrumSample {
+    const analyser = this.analyser;
+    const bins = this.freqBins;
+    if (
+      analyser &&
+      bins &&
+      this.ctx?.state === 'running' &&
+      this.state.isPlaying &&
+      !this.state.isMuted
+    ) {
+      analyser.getByteFrequencyData(bins);
+      const usefulCount = Math.min(bins.length, 44);
+      let lowSum = 0;
+      let midSum = 0;
+      let highSum = 0;
+      let total = 0;
+      let weightedFreq = 0;
+
+      for (let i = 0; i < usefulCount; i++) {
+        const val = bins[i] / 255;
+        total += val;
+        weightedFreq += val * (i / Math.max(1, usefulCount - 1));
+        if (i < 4) lowSum += val;
+        else if (i < 13) midSum += val;
+        else highSum += val;
+      }
+
+      const liveLow = Math.min(1, (lowSum / 4) * 1.85);
+      const liveMid = Math.min(1, (midSum / 9) * 2.1);
+      const liveHigh = Math.min(1, (highSum / Math.max(1, usefulCount - 13)) * 3.1);
+      const liveAmp = Math.min(1, (total / usefulCount) * 2.6);
+
+      if (liveAmp > 0.008) {
+        for (let b = 0; b < ACOUSTIC_SPECTRUM_BAND_COUNT; b++) {
+          const norm = b / (ACOUSTIC_SPECTRUM_BAND_COUNT - 1);
+          const idxFloat = Math.pow(norm, 1.35) * (usefulCount - 1);
+          const i0 = Math.floor(idxFloat);
+          const i1 = Math.min(usefulCount - 1, i0 + 1);
+          const frac = idxFloat - i0;
+          const interp = (bins[i0] * (1 - frac) + bins[i1] * frac) / 255;
+          out.bands[b] = Math.min(1, interp * (1.85 + norm * 1.1));
+        }
+        out.hasLiveAudio = true;
+        out.lowBand = liveLow;
+        out.midBand = liveMid;
+        out.highBand = liveHigh;
+        out.amplitude = liveAmp;
+        out.peakFreqNorm = total > 0.001 ? weightedFreq / total : 0.42;
+        return out;
+      }
+    }
+
+    return computeAmbientEcologicalSpectrum(elapsedSec, mix, out);
+  }
+
   public setSpotlight(id: SoundLayerId | null): void {
     this.state.activeSpotlight = id;
     this.emit();
@@ -438,6 +591,15 @@ class SoundscapeAudioController {
       }
     }
     this.sourceNodes = [];
+    if (this.analyser) {
+      try {
+        this.analyser.disconnect();
+      } catch {
+        // Ignore already disconnected node
+      }
+      this.analyser = null;
+    }
+    this.freqBins = null;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
